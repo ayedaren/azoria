@@ -162,6 +162,10 @@ void sendScreenshot(uint8_t buffer_index) {
 
 void handleLine(String line) {
   line.trim();
+  if (line == "AZORIA_IDENTIFY") {
+    Serial.println("AZORIA_TOUCH_V1");
+    return;
+  }
   if (line == "AZORIA_SCREENSHOT" || line == "AZORIA_SCREENSHOT 0") {
     sendScreenshot(0);
     return;
@@ -209,7 +213,7 @@ void handleLine(String line) {
     Serial.flush();
     // The new credentials were only tested and were never saved. Bring the
     // previous network back so a typo cannot strand an already configured
-    // controller or interrupt its normal backend connection.
+    // controller or interrupt its normal Desktop connection.
     if (has_saved_config) restoreSavedWiFi(saved_config);
     return;
   }

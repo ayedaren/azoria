@@ -14,7 +14,7 @@ bool isPrivateIpv4(const IPAddress &address) {
          (first == 192 && second == 168);
 }
 
-bool isLocalBackendHost(const String &host) {
+bool isLocalDesktopHost(const String &host) {
   if (host.isEmpty()) return true;
   IPAddress address;
   return address.fromString(host) && isPrivateIpv4(address);
@@ -23,7 +23,7 @@ bool isLocalBackendHost(const String &host) {
 
 bool DeviceConfig::valid() const {
   return !ssid.isEmpty() && token.length() >= 20 && port > 0 &&
-         isLocalBackendHost(host);
+         isLocalDesktopHost(host);
 }
 
 bool loadDeviceConfig(DeviceConfig &config) {

@@ -14,11 +14,25 @@ const DDC_DESTINATION: u8 = 0x6e;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
-    Probe { transport: Transport },
+    Probe {
+        transport: Transport,
+    },
     Enumerate,
-    Get { transport: Transport, display: usize, vcp: u8 },
-    Set { transport: Transport, display: usize, vcp: u8, value: u16 },
-    Input { transport: Transport, source: InputSource },
+    Get {
+        transport: Transport,
+        display: usize,
+        vcp: u8,
+    },
+    Set {
+        transport: Transport,
+        display: usize,
+        vcp: u8,
+        value: u16,
+    },
+    Input {
+        transport: Transport,
+        source: InputSource,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -49,11 +63,19 @@ struct Response {
 
 impl Response {
     fn success(result: Value) -> Self {
-        Self { ok: true, result: Some(result), error: None }
+        Self {
+            ok: true,
+            result: Some(result),
+            error: None,
+        }
     }
 
     fn failure(error: impl Into<String>) -> Self {
-        Self { ok: false, result: None, error: Some(error.into()) }
+        Self {
+            ok: false,
+            result: None,
+            error: Some(error.into()),
+        }
     }
 }
 
@@ -78,7 +100,7 @@ fn native_get(display: usize, vcp: u8) -> Result<Value, String> {
         .get_vcp_feature(vcp)
         .map_err(|error| format!("DDC/CI Get VCP 0x{vcp:02x} failed: {error}"))?;
     Ok(json!({
-        "backend": display.info.backend.to_string(),
+        "driver": display.info.backend.to_string(),
         "id": display.info.id,
         "vcp": vcp,
         "maximum": value.maximum(),
@@ -125,7 +147,10 @@ fn validate_get_response(report: &[u8], opcode: u8) -> Result<(u16, u16), String
         return Err("LG HID response is not a DDC/CI Get VCP reply".into());
     }
     if report[7] != 0 {
-        return Err(format!("LG HID DDC/CI Get VCP failed with result 0x{:02x}", report[7]));
+        return Err(format!(
+            "LG HID DDC/CI Get VCP failed with result 0x{:02x}",
+            report[7]
+        ));
     }
     if report[8] != opcode {
         return Err("LG HID response opcode does not match request".into());
@@ -142,12 +167,23 @@ fn validate_get_response(report: &[u8], opcode: u8) -> Result<(u16, u16), String
         .iter()
         .fold(DDC_DESTINATION ^ 0x50, |current, byte| current ^ byte);
     if checksum != 0 {
-        return Err(format!("LG HID response checksum failed with 0x{checksum:02x}"));
+        return Err(format!(
+            "LG HID response checksum failed with 0x{checksum:02x}"
+        ));
     }
-    Ok((u16::from_be_bytes([report[10], report[11]]), u16::from_be_bytes([report[12], report[13]])))
+    Ok((
+        u16::from_be_bytes([report[10], report[11]]),
+        u16::from_be_bytes([report[12], report[13]]),
+    ))
 }
 
-fn lg_exchange(source: u8, opcode: u8, payload: &[u8], expected_length: u8, response_required: bool) -> Result<Option<(u16, u16)>, String> {
+fn lg_exchange(
+    source: u8,
+    opcode: u8,
+    payload: &[u8],
+    expected_length: u8,
+    response_required: bool,
+) -> Result<Option<(u16, u16)>, String> {
     if payload.len() > 52 {
         return Err("invalid HID DDC request".into());
     }
@@ -158,7 +194,9 @@ fn lg_exchange(source: u8, opcode: u8, payload: &[u8], expected_length: u8, resp
     ddc.push(source);
     ddc.push(0x80 | u8::try_from(payload.len()).map_err(|_| "DDC payload is too long")?);
     ddc.extend_from_slice(payload);
-    let checksum = ddc.iter().fold(DDC_DESTINATION, |current, byte| current ^ byte);
+    let checksum = ddc
+        .iter()
+        .fold(DDC_DESTINATION, |current, byte| current ^ byte);
     ddc.push(checksum);
     report[4] = u8::try_from(ddc.len()).map_err(|_| "DDC frame is too long")?;
     report[8..8 + ddc.len()].copy_from_slice(&ddc);
@@ -222,29 +260,65 @@ fn lg_input(source: InputSource) -> Result<Value, String> {
 
 fn execute(request: Request) -> Result<Value, String> {
     match request {
-        Request::Probe { transport: Transport::NativeDdc } => {
+        Request::Probe {
+            transport: Transport::NativeDdc,
+        } => {
             let displays = native_displays();
             Ok(json!({ "transport": "native-ddc", "count": displays.len() }))
         }
-        Request::Probe { transport: Transport::LgHidDdc } => {
+        Request::Probe {
+            transport: Transport::LgHidDdc,
+        } => {
             lg_device()?;
-            Ok(json!({ "transport": "lg-hid-ddc", "vendor_id": LG_VENDOR_ID, "product_id": LG_PRODUCT_ID }))
+            Ok(
+                json!({ "transport": "lg-hid-ddc", "vendor_id": LG_VENDOR_ID, "product_id": LG_PRODUCT_ID }),
+            )
         }
-        Request::Enumerate => Ok(Value::Array(native_displays().into_iter().enumerate().map(|(index, display)| {
-            json!({
-                "display": index + 1,
-                "backend": display.info.backend.to_string(),
-                "id": display.info.id,
-                "manufacturer": display.info.manufacturer_id,
-                "model": display.info.model_name
-            })
-        }).collect())),
-        Request::Get { transport: Transport::NativeDdc, display, vcp } => native_get(display, vcp),
-        Request::Get { transport: Transport::LgHidDdc, vcp, .. } => lg_get(vcp),
-        Request::Set { transport: Transport::NativeDdc, display, vcp, value } => native_set(display, vcp, value),
-        Request::Set { transport: Transport::LgHidDdc, vcp, value, .. } => lg_set(vcp, value),
-        Request::Input { transport: Transport::LgHidDdc, source } => lg_input(source),
-        Request::Input { transport: Transport::NativeDdc, .. } => Err("native input changes use Set VCP 0x60".into()),
+        Request::Enumerate => Ok(Value::Array(
+            native_displays()
+                .into_iter()
+                .enumerate()
+                .map(|(index, display)| {
+                    json!({
+                        "display": index + 1,
+                        "driver": display.info.backend.to_string(),
+                        "id": display.info.id,
+                        "manufacturer": display.info.manufacturer_id,
+                        "model": display.info.model_name
+                    })
+                })
+                .collect(),
+        )),
+        Request::Get {
+            transport: Transport::NativeDdc,
+            display,
+            vcp,
+        } => native_get(display, vcp),
+        Request::Get {
+            transport: Transport::LgHidDdc,
+            vcp,
+            ..
+        } => lg_get(vcp),
+        Request::Set {
+            transport: Transport::NativeDdc,
+            display,
+            vcp,
+            value,
+        } => native_set(display, vcp, value),
+        Request::Set {
+            transport: Transport::LgHidDdc,
+            vcp,
+            value,
+            ..
+        } => lg_set(vcp, value),
+        Request::Input {
+            transport: Transport::LgHidDdc,
+            source,
+        } => lg_input(source),
+        Request::Input {
+            transport: Transport::NativeDdc,
+            ..
+        } => Err("native input changes use Set VCP 0x60".into()),
     }
 }
 
@@ -259,8 +333,15 @@ fn main() -> ExitCode {
         Ok(result) => Response::success(result),
         Err(error) => Response::failure(error),
     };
-    println!("{}", serde_json::to_string(&response).expect("response serialization cannot fail"));
-    if response.ok { ExitCode::SUCCESS } else { ExitCode::from(1) }
+    println!(
+        "{}",
+        serde_json::to_string(&response).expect("response serialization cannot fail")
+    );
+    if response.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
 }
 
 #[cfg(test)]
@@ -269,14 +350,22 @@ mod tests {
 
     #[test]
     fn parses_known_good_lg_reply() {
-        let report = [0x0f, 0x02, 0x55, 0x00, 0x6e, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x64, 0xa4];
+        let report = [
+            0x0f, 0x02, 0x55, 0x00, 0x6e, 0x88, 0x02, 0x00, 0x10, 0x00, 0x00, 0x64, 0x00, 0x64,
+            0xa4,
+        ];
         assert_eq!(validate_get_response(&report, 0x10).unwrap(), (100, 100));
     }
 
     #[test]
     fn rejects_ddc_failure_reply_instead_of_returning_zero() {
-        let mut report = [0x0f, 0x02, 0x55, 0x00, 0x6e, 0x88, 0x02, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        report[14] = report[5..14].iter().fold(DDC_DESTINATION ^ 0x50, |current, byte| current ^ byte);
+        let mut report = [
+            0x0f, 0x02, 0x55, 0x00, 0x6e, 0x88, 0x02, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00,
+        ];
+        report[14] = report[5..14]
+            .iter()
+            .fold(DDC_DESTINATION ^ 0x50, |current, byte| current ^ byte);
         assert!(validate_get_response(&report, 0x10).is_err());
     }
 }

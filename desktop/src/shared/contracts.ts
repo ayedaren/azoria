@@ -34,6 +34,15 @@ export interface UsbDevice {
   manufacturer?: string
 }
 
+export interface FirmwareImage {
+  path: string
+  name: string
+  version: string
+  chip: "ESP32-S3"
+  size: number
+  sha256: string
+}
+
 export interface LanDevice {
   id: string
   name: string
@@ -57,7 +66,8 @@ export interface DesktopApi {
     verifyUsb(path: string): Promise<{ chip: string; mac: string }>
     scanWifi(path: string): Promise<Array<{ ssid: string; rssi: number; secure: boolean }>>
     configureWifi(path: string, ssid: string, password: string): Promise<void>
-    flash(path: string): Promise<void>
+    selectFirmware(): Promise<FirmwareImage | null>
+    flash(path: string, firmwarePath: string, expectedSha256: string): Promise<void>
   }
   security: {
     sign(message: string): Promise<string>

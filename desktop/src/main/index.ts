@@ -3,8 +3,9 @@ import path from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, session, type OpenDialogOptions } from "electron"
 import type { ControlRequest } from "../shared/contracts"
 import { loadConfig } from "./config"
-import { DeviceManager } from "./device"
+import { TouchManager } from "./touch"
 import { LanController } from "./lan"
+import { LocalLogger } from "./logger"
 import { MonitorController } from "./monitor"
 
 const isDevelopment = !app.isPackaged
@@ -75,16 +76,22 @@ function createWindow(): BrowserWindow {
 
 void app.whenReady().then(async () => {
   const config = await loadConfig(app.getPath("userData"))
+  app.setAppLogsPath()
+  const logger = new LocalLogger(app.getPath("logs"))
+  await logger.initialize().catch(() => undefined)
   const monitor = new MonitorController(
     config.display,
     path.resolve(app.getAppPath(), "desktop/profiles"),
     path.join(app.getPath("userData"), "monitor-profiles"),
+    isDevelopment
+      ? path.resolve(app.getAppPath(), "sidecar/target/release", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar")
+      : path.join(process.resourcesPath, "sidecar", process.platform === "win32" ? "azoria-ddc-sidecar.exe" : "azoria-ddc-sidecar"),
+    logger,
   )
   await monitor.initialize()
-  const lan = new LanController(config.token, config.desktopId, monitor)
+  const lan = new LanController(config.desktopId, monitor)
   await lan.start()
-  const firmwareDirectory = path.resolve(app.getAppPath(), "firmware")
-  const devices = new DeviceManager(config.token, firmwareDirectory)
+  const devices = new TouchManager(config.token)
 
   session.defaultSession.webRequest.onBeforeRequest(
     { urls: ["http://*/*", "https://*/*"] },
@@ -97,7 +104,7 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle("monitor:status", () => monitor.status())
   ipcMain.handle("monitor:relay-status", () => lan.relayStatus())
-  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => monitor.control(request))
+  ipcMain.handle("monitor:control", (_event, request: ControlRequest) => monitor.control(request, "desktop-ui"))
   ipcMain.handle("monitor:relay-control", (_event, request: ControlRequest, sourceNonce: string, sourceCommandId: string) =>
     lan.relayControl(request, sourceNonce, sourceCommandId))
   ipcMain.handle("monitor:connection", () => monitor.connection())
@@ -118,7 +125,19 @@ void app.whenReady().then(async () => {
   ipcMain.handle("device:scan-wifi", (_event, devicePath: string) => devices.scanWifi(devicePath))
   ipcMain.handle("device:configure-wifi", (_event, input: { path: string; ssid: string; password: string }) =>
     devices.configureWifi(input.path, input.ssid, input.password))
-  ipcMain.handle("device:flash", (_event, devicePath: string) => devices.flash(devicePath))
+  ipcMain.handle("device:select-firmware", async (event) => {
+    const options: OpenDialogOptions = {
+      title: "选择 AZORIA Touch 固件",
+      properties: ["openFile"],
+      filters: [{ name: "AZORIA Touch 固件", extensions: ["bin"] }],
+    }
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths[0]) return null
+    return devices.inspectFirmware(result.filePaths[0])
+  })
+  ipcMain.handle("device:flash", (_event, input: { path: string; firmwarePath: string; expectedSha256: string }) =>
+    devices.flash(input.path, input.firmwarePath, input.expectedSha256))
   ipcMain.handle("security:sign", (_event, message: string) => {
     if (typeof message !== "string" || message.length > 512) throw new Error("签名消息无效")
     return createHmac("sha256", config.token).update(message).digest("hex").slice(0, 16)

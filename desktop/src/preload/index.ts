@@ -18,7 +18,9 @@ const api: DesktopApi = {
     scanWifi: (path: string) => ipcRenderer.invoke("device:scan-wifi", path),
     configureWifi: (path: string, ssid: string, password: string) =>
       ipcRenderer.invoke("device:configure-wifi", { path, ssid, password }),
-    flash: (path: string) => ipcRenderer.invoke("device:flash", path),
+    selectFirmware: () => ipcRenderer.invoke("device:select-firmware"),
+    flash: (path: string, firmwarePath: string, expectedSha256: string) =>
+      ipcRenderer.invoke("device:flash", { path, firmwarePath, expectedSha256 }),
   },
   security: {
     sign: (message: string) => ipcRenderer.invoke("security:sign", message),

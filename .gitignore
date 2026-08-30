@@ -1,6 +1,6 @@
 .DS_Store
 # Local credentials and runtime state
-backend/config.local.json
+config.local.json
 *.env
 *.env.*
 *.sqlite

@@ -5,12 +5,21 @@ on:
   pull_request:
 
 jobs:
-  backend:
+  desktop:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-      - run: python -m py_compile backend/azoria_displayd/modules/kvm/api.py
-      - run: PYTHONPATH=backend python -m unittest discover -s backend/tests -p 'test_*.py'
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run desktop:build
+
+  sidecar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path sidecar/Cargo.toml

@@ -75,7 +75,7 @@ async function handleRequest(
       payload = `C|1|1|${typeof returned === "boolean" ? (returned ? 1 : 0) : returned}`
     }
   } catch {
-    payload = "E|backend"
+    payload = "E|desktop"
   }
   const reply = `R|${nonce}|${id}|${payload}`
   const signature = await window.azoria.security.sign(reply)

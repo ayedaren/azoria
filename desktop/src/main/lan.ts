@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import { createSocket, type RemoteInfo, type Socket } from "node:dgram"
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
@@ -60,12 +60,6 @@ function sameSubnet(remote: string, local: PrivateInterface): boolean {
     (remoteValue & mask) === (localValue & mask)
 }
 
-function safeEqual(left: string, right: string): boolean {
-  const a = Buffer.from(left)
-  const b = Buffer.from(right)
-  return a.length === b.length && timingSafeEqual(a, b)
-}
-
 export class LanController {
   private readonly servers: Server[] = []
   private readonly coordination = new Map<string, { socket: Socket; timer: NodeJS.Timeout; network: PrivateInterface }>()
@@ -80,12 +74,8 @@ export class LanController {
   private masterId = ""
   private isMaster = false
 
-  constructor(private readonly token: string, private readonly desktopId: string, private readonly monitor: MonitorController) {
+  constructor(private readonly desktopId: string, private readonly monitor: MonitorController) {
     activeControllers.add(this)
-  }
-
-  private sign(message: string): string {
-    return createHmac("sha256", this.token).update(message).digest("hex").slice(0, 16)
   }
 
   async start(): Promise<void> {
@@ -133,8 +123,7 @@ export class LanController {
     this.refreshMaster()
     const self = this.peers.get(this.desktopId)
     if (self) self.master = this.isMaster
-    const unsigned = `AZORIA_DESKTOP_HEARTBEAT_V1|${this.desktopId}|${network.address}|${this.reachable ? 1 : 0}|${this.isMaster ? 1 : 0}|${++this.heartbeatSequence}`
-    const heartbeat = Buffer.from(`${unsigned}|${this.sign(unsigned)}`)
+    const heartbeat = Buffer.from(`AZORIA_DESKTOP_HEARTBEAT_V1|${this.desktopId}|${network.address}|${this.reachable ? 1 : 0}|${this.isMaster ? 1 : 0}|${++this.heartbeatSequence}`)
     socket.send(heartbeat, coordinationPort, network.broadcast)
     socket.send(heartbeat, discoveryPort, network.broadcast)
     for (const [id, peer] of this.peers) if (Date.now() - peer.seenAt > peerMaxAgeMs) this.peers.delete(id)
@@ -160,8 +149,7 @@ export class LanController {
     this.broadcast(socket, network, `AZORIA_DESKTOP_RELEASE_V1|${this.desktopId}|${this.heartbeatSequence}`)
   }
 
-  private broadcast(socket: Socket, network: PrivateInterface, unsigned: string): string {
-    const wire = `${unsigned}|${this.sign(unsigned)}`
+  private broadcast(socket: Socket, network: PrivateInterface, wire: string): string {
     socket.send(Buffer.from(wire), coordinationPort, network.broadcast)
     return wire
   }
@@ -176,11 +164,8 @@ export class LanController {
   private async handleCoordination(socket: Socket, network: PrivateInterface, message: Buffer, remote: RemoteInfo): Promise<void> {
     if (!sameSubnet(remote.address, network) || message.length > 512) return
     const fields = message.toString("utf8").split("|")
-    const supplied = fields.at(-1) || ""
-    const unsigned = fields.slice(0, -1).join("|")
-    if (!safeEqual(this.sign(unsigned), supplied)) return
 
-    if (fields[0] === "AZORIA_DESKTOP_HEARTBEAT_V1" && fields.length === 7) {
+    if (fields[0] === "AZORIA_DESKTOP_HEARTBEAT_V1" && fields.length === 6) {
       const id = fields[1] || ""
       if (!/^[0-9a-f]{32}$/i.test(id) || fields[2] !== remote.address || !["0", "1"].includes(fields[3] || "") ||
           !["0", "1"].includes(fields[4] || "") || !/^\d+$/.test(fields[5] || "")) return
@@ -189,7 +174,7 @@ export class LanController {
       return
     }
 
-    if (fields[0] === "AZORIA_DESKTOP_RELEASE_V1" && fields.length === 4) {
+    if (fields[0] === "AZORIA_DESKTOP_RELEASE_V1" && fields.length === 3) {
       const released = fields[1] || ""
       if (released === this.masterId) this.masterId = ""
       const peer = this.peers.get(released)
@@ -197,7 +182,7 @@ export class LanController {
       return
     }
 
-    if (fields[0] === "AZORIA_DESKTOP_CLAIM_V1" && fields.length === 7) {
+    if (fields[0] === "AZORIA_DESKTOP_CLAIM_V1" && fields.length === 6) {
       const key = `${fields[1]}:${fields[2]}:${fields[3]}`
       const claimant = fields[4] || ""
       if (!/^[0-9a-f]{32}$/i.test(claimant)) return
@@ -206,7 +191,7 @@ export class LanController {
       return
     }
 
-    if (fields[0] === "AZORIA_DESKTOP_RESULT_V1" && fields.length === 10) {
+    if (fields[0] === "AZORIA_DESKTOP_RESULT_V1" && fields.length === 9) {
       const key = `${fields[1]}:${fields[2]}:${fields[3]}`
       this.commandResults.set(key, { wire: message.toString("utf8"), expiresAt: Date.now() + commandCacheMs })
       if (fields[5] === "1" && /^[0-9a-f]{32}$/i.test(fields[4] || "")) {
@@ -225,7 +210,7 @@ export class LanController {
       return
     }
 
-    if (fields[0] !== "AZORIA_TOUCH_COMMAND_V1" || fields.length !== 8) return
+    if (fields[0] !== "AZORIA_TOUCH_COMMAND_V1" || fields.length !== 7) return
     const [touchId, bootNonce, commandId, control, encodedValue, finalValue] = fields.slice(1, 7)
     if (!/^[0-9A-F]{12}$/i.test(touchId || "") || !/^[0-9a-f]{8}$/i.test(bootNonce || "") || !/^\d+$/.test(commandId || "") ||
         !["brightness", "volume", "mute", "input"].includes(control || "") || !["0", "1"].includes(finalValue || "")) return
@@ -281,8 +266,7 @@ export class LanController {
     if (!peer || !isPrivateIpv4(peer.address)) throw new Error("局域网内没有可用的 Desktop")
     return new Promise((resolve, reject) => {
       const request = httpRequest({
-        host: peer.address, port: controlPort, path: "/v1/status", method: "GET",
-        headers: { Authorization: `Bearer ${this.token}` }, timeout: 3500,
+        host: peer.address, port: controlPort, path: "/v1/status", method: "GET", timeout: 3500,
       }, (response) => {
         const chunks: Buffer[] = []
         let length = 0
@@ -323,7 +307,7 @@ export class LanController {
       this.broadcast(socket, network, `AZORIA_DESKTOP_CLAIM_V1|${command.touchId}|${command.bootNonce}|${command.commandId}|${this.desktopId}|${this.heartbeatSequence}`)
       await new Promise((resolve) => setTimeout(resolve, 120))
       if (this.commandResults.has(command.key) || this.claims.get(command.key) !== this.desktopId) return
-      const status = await this.monitor.control({ control: command.control, value: command.value, final: command.final })
+      const status = await this.monitor.control({ control: command.control, value: command.value, final: command.final }, "touch")
       const returned = status[command.control as keyof typeof status]
       const encoded = typeof returned === "boolean" ? (returned ? "1" : "0") : String(returned)
       this.isMaster = true
@@ -345,7 +329,7 @@ export class LanController {
 
   private authorized(request: IncomingMessage): boolean {
     const remote = request.socket.remoteAddress?.replace(/^::ffff:/, "") || ""
-    return isPrivateIpv4(remote) && safeEqual(request.headers.authorization || "", `Bearer ${this.token}`)
+    return isPrivateIpv4(remote)
   }
 
   private json(response: ServerResponse, status: number, body: unknown): void {
@@ -376,7 +360,7 @@ export class LanController {
         const payload = await this.body(request)
         const control = payload.control
         if (!["brightness", "volume", "mute", "input"].includes(String(control))) return this.json(response, 400, { ok: false, error: "unsupported control" })
-        const status = await this.monitor.control(payload as unknown as ControlRequest)
+        const status = await this.monitor.control(payload as unknown as ControlRequest, "desktop-peer")
         return this.json(response, 200, { accepted: true, confirmed: payload.final !== false, value: status[control as keyof typeof status] })
       }
       if (request.method === "POST" && request.url === "/v1/device/register") {
@@ -401,8 +385,7 @@ export class LanController {
     return new Promise((resolve) => {
       const socket = createSocket("udp4")
       const nonce = randomBytes(12).toString("hex")
-      const unsignedProbe = `AZORIA_DESKTOP_DISCOVER_V1|${nonce}`
-      const probe = Buffer.from(`${unsignedProbe}|${this.sign(unsignedProbe)}`)
+      const probe = Buffer.from(`AZORIA_DESKTOP_DISCOVER_V1|${nonce}`)
       const devices = new Map<string, LanDevice>()
       const pending = new Map<string, { id: string; name: string; firmware: string }>()
       let finished = false
@@ -415,18 +398,16 @@ export class LanController {
       socket.on("message", (message, remote) => {
         if (!sameSubnet(remote.address, network)) return
         const fields = message.toString("utf8").split("|")
-        const supplied = fields.at(-1) || ""
-        const unsigned = fields.slice(0, -1).join("|")
-        if (!safeEqual(this.sign(unsigned), supplied) || fields[1] !== nonce) return
-        if (fields[0] === "AZORIA_TOUCH_V1" && fields.length === 6) {
+        if (fields[1] !== nonce) return
+        if (fields[0] === "AZORIA_TOUCH_V1" && fields.length === 5) {
           const id = fields[2] || ""
           const name = fields[3] || ""
           const firmware = fields[4] || ""
           if (!/^[0-9A-F]{12}$/i.test(id) || !/^azoria-touch-[a-z0-9-]{1,32}$/i.test(name)) return
           pending.set(remote.address, { id, name, firmware })
           const config = `AZORIA_DESKTOP_CONFIG_V1|${nonce}|${network.address}|${controlPort}`
-          socket.send(Buffer.from(`${config}|${this.sign(config)}`), discoveryPort, remote.address)
-        } else if (fields[0] === "AZORIA_TOUCH_CONFIGURED_V1" && fields.length === 4) {
+          socket.send(Buffer.from(config), discoveryPort, remote.address)
+        } else if (fields[0] === "AZORIA_TOUCH_CONFIGURED_V1" && fields.length === 3) {
           const found = pending.get(remote.address)
           if (!found || found.id !== fields[2]) return
           devices.set(found.id, { ...found, address: remote.address, paired: true })

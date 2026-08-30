@@ -7,8 +7,8 @@
 #include <lvgl.h>
 #include <time.h>
 
-#include "modules/kvm/screen.h"
-#include "modules/kvm/service.h"
+#include "features/display_control/screen.h"
+#include "features/display_control/service.h"
 #include "platform/board.h"
 #include "services/device_config.h"
 #include "services/ble_transport.h"
@@ -282,12 +282,12 @@ void setup() {
 
   saved_config = config;
   have_saved_config = true;
-  Kvm::showScreen();
+  DisplayControl::showScreen();
   // Let the Wi-Fi driver reserve its latency-sensitive internal DMA buffers
   // before NimBLE starts. The BLE host is configured to use PSRAM for dynamic
   // allocations, so both radios remain available without starving RGB DMA.
   beginWiFi(saved_config);
-  Kvm::startRemote(saved_config);
+  DisplayControl::startRemote(saved_config);
   remote_started = true;
   if (waitForWiFi()) {
     logMemory("network-ready");
@@ -306,7 +306,7 @@ void loop() {
   lv_timer_handler();
   display_full_redraw_pending |= display_full_redraw_requested;
   display_full_redraw_requested = false;
-  display_full_redraw_pending |= Kvm::takeFullRedrawRequest();
+  display_full_redraw_pending |= DisplayControl::takeFullRedrawRequest();
   usbProvisioningLoop();
   if (have_saved_config) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -318,7 +318,7 @@ void loop() {
     }
   }
   if (!provisioning) {
-    Kvm::refresh();
+    DisplayControl::refresh();
   }
   lv_disp_t *display = lv_disp_get_default();
   lv_disp_draw_buf_t *active_draw_buffer =
