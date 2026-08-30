@@ -1,0 +1,33 @@
+.DS_Store
+# Local credentials and runtime state
+backend/config.local.json
+*.env
+*.env.*
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Electron / Node.js generated files
+node_modules/
+out/
+dist/
+release/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# PlatformIO / ESP-IDF generated files
+.pio/
+firmware/.pio/
+firmware/.dummy/
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/sdkconfig.defaults
+firmware/sdkconfig.*
+firmware/include/device_config.h

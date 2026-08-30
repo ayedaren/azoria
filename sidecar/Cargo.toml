@@ -1,0 +1,25 @@
+[package]
+name = "azoria-ddc-sidecar"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+hidapi = "2.6.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-macos"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-winapi"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ddc-hi = { version = "0.4.1", default-features = false, features = ["ddc-i2c"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
