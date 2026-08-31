@@ -24,11 +24,12 @@ BLECharacteristic *request_characteristic = nullptr;
 BLECharacteristic *ota_control_characteristic = nullptr;
 BLECharacteristic *ota_data_characteristic = nullptr;
 BLECharacteristic *ota_status_characteristic = nullptr;
+BLEServer *ble_server = nullptr;
 SemaphoreHandle_t response_mutex = nullptr;
 SemaphoreHandle_t response_ready = nullptr;
 SemaphoreHandle_t exchange_mutex = nullptr;
 volatile bool central_connected = false;
-volatile bool central_subscribed = false;
+volatile bool central_validated = false;
 uint32_t next_request_id = 1;
 String received_response;
 bool ota_active = false;
@@ -40,6 +41,23 @@ String ota_expected_sha;
 mbedtls_sha256_context ota_sha;
 bool ota_reboot_pending = false;
 uint32_t ota_reboot_at = 0;
+uint8_t consecutive_exchange_failures = 0;
+bool restart_advertising_on_disconnect = false;
+bool advertising_restart_pending = false;
+uint32_t advertising_restart_at = 0;
+
+void resetCentralConnection(const char *reason) {
+  if (!ble_server || !central_connected) return;
+  Serial.printf("BLE_RESET,reason=%s\n", reason);
+  restart_advertising_on_disconnect = true;
+  central_connected = false;
+  central_validated = false;
+  consecutive_exchange_failures = 0;
+  const auto peers = ble_server->getPeerDevices(false);
+  for (const auto &peer : peers) {
+    ble_server->disconnect(peer.first);
+  }
+}
 
 String signature(const String &message) {
   uint8_t digest[32]{};
@@ -187,6 +205,10 @@ void finishOtaSha(String &actual_sha) {
 }
 
 void handleOtaControl(BLECharacteristic *characteristic) {
+  if (auth_token.length() < 20) {
+    sendOtaStatus("ERROR|auth");
+    return;
+  }
   String message = characteristic->getValue();
   int separator = message.lastIndexOf('|');
   if (separator < 0) {
@@ -298,6 +320,14 @@ void acceptResponse(BLECharacteristic *characteristic) {
   if (!response_mutex || !response_ready) return;
   String value = characteristic->getValue();
   if (value.isEmpty()) return;
+  if (fieldCount(value) == 2 && field(value, 0) == "H" &&
+      constantTimeEqual(field(value, 1), signature("H"))) {
+    central_validated = true;
+    consecutive_exchange_failures = 0;
+    Serial.println("BLE central authenticated");
+    return;
+  }
+  if (!central_validated) return;
   xSemaphoreTake(response_mutex, portMAX_DELAY);
   received_response = value;
   xSemaphoreGive(response_mutex);
@@ -306,29 +336,40 @@ void acceptResponse(BLECharacteristic *characteristic) {
 
 class ServerCallbacks : public BLEServerCallbacks {
  public:
-  void onConnect(BLEServer *) override {
+  void onConnect(BLEServer *server) override {
     central_connected = true;
+    if (server->getConnectedCount() <= 1) {
+      central_validated = false;
+      consecutive_exchange_failures = 0;
+    }
     Serial.println("BLE central connected");
+    // Keep one advertising slot available while macOS releases a historical
+    // Web Bluetooth connection. New Desktop builds use polling and therefore
+    // do not create another persistent notification subscription.
+    if (server->getConnectedCount() < 2) {
+      advertising_restart_pending = true;
+      advertising_restart_at = millis() + 250;
+    }
   }
 
-  void onDisconnect(BLEServer *) override {
-    central_connected = false;
-    central_subscribed = false;
+  void onDisconnect(BLEServer *server) override {
+    const bool has_remaining_central = server->getConnectedCount() > 0;
+    central_connected = has_remaining_central;
+    if (!has_remaining_central) {
+      central_validated = false;
+      consecutive_exchange_failures = 0;
+    }
     Serial.println("BLE central disconnected");
+    if (restart_advertising_on_disconnect) {
+      if (has_remaining_central) return;
+      restart_advertising_on_disconnect = false;
+      advertising_restart_pending = true;
+      advertising_restart_at = millis() + 3000;
+      return;
+    }
     BLEDevice::startAdvertising();
   }
-};
 
-class RequestCallbacks : public BLECharacteristicCallbacks {
- public:
-#if defined(CONFIG_NIMBLE_ENABLED)
-  void onSubscribe(BLECharacteristic *, ble_gap_conn_desc *,
-                   uint16_t sub_value) override {
-    central_subscribed = sub_value != 0;
-    Serial.printf("BLE notifications %s\n",
-                  central_subscribed ? "ready" : "disabled");
-  }
-#endif
 };
 
 class ResponseCallbacks : public BLECharacteristicCallbacks {
@@ -375,7 +416,7 @@ class OtaDataCallbacks : public BLECharacteristicCallbacks {
 
 bool exchange(const String &unsigned_request, uint32_t request_id,
               String &response, uint32_t timeout_ms) {
-  if (!bleTransportReady() || !request_characteristic ||
+  if (!bleTransportValidated() || !request_characteristic ||
       !response_mutex || !response_ready || !exchange_mutex) {
     return false;
   }
@@ -388,10 +429,13 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
     }
     String message = unsigned_request + "|" + signature(unsigned_request);
     request_characteristic->setValue(message);
-    request_characteristic->notify();
     if (xSemaphoreTake(response_ready, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
       Serial.printf("BLE_TIMEOUT,ID=%lu\n",
                     static_cast<unsigned long>(request_id));
+      ++consecutive_exchange_failures;
+      if (!central_validated || consecutive_exchange_failures >= 2) {
+        resetCentralConnection("response-timeout");
+      }
       break;
     }
     xSemaphoreTake(response_mutex, portMAX_DELAY);
@@ -408,8 +452,14 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
         field(response, 2).toInt() != static_cast<long>(request_id)) {
       Serial.printf("BLE_AUTH_REJECTED,ID=%lu\n",
                     static_cast<unsigned long>(request_id));
+      ++consecutive_exchange_failures;
+      if (!central_validated || consecutive_exchange_failures >= 2) {
+        resetCentralConnection("invalid-response");
+      }
       break;
     }
+    consecutive_exchange_failures = 0;
+    central_validated = true;
     success = true;
   } while (false);
   xSemaphoreGive(exchange_mutex);
@@ -417,12 +467,15 @@ bool exchange(const String &unsigned_request, uint32_t request_id,
 }
 
 bool decodeStatus(const String &wire, String &response) {
-  if (fieldCount(wire) != 9 || field(wire, 3) != "S") return false;
+  if (fieldCount(wire) != 12 || field(wire, 3) != "S") return false;
   response =
       "{\"brightness\":" + field(wire, 4) +
       ",\"volume\":" + field(wire, 5) +
       ",\"mute\":" + (field(wire, 6) == "1" ? "true" : "false") +
-      ",\"input\":\"" + field(wire, 7) +
+      ",\"input\":\"" + field(wire, 7) + "\"" +
+      ",\"available\":" + (field(wire, 8) == "1" ? "true" : "false") +
+      ",\"unixTime\":" + field(wire, 9) +
+      ",\"timezoneOffsetMinutes\":" + field(wire, 10) +
       "}";
   return true;
 }
@@ -471,15 +524,16 @@ bool startBleTransport(const String &device_name, const String &token) {
 
   if (!BLEDevice::init(device_name.c_str())) return false;
   BLEDevice::setMTU(256);
-  BLEServer *server = BLEDevice::createServer();
-  server->setCallbacks(new ServerCallbacks());
-  server->advertiseOnDisconnect(true);
-  BLEService *service = server->createService(kServiceUuid);
+  ble_server = BLEDevice::createServer();
+  ble_server->setCallbacks(new ServerCallbacks());
+  // The disconnect callback restarts advertising after stale sessions are
+  // cleared, so automatic advertising must remain disabled.
+  ble_server->advertiseOnDisconnect(false);
+  BLEService *service = ble_server->createService(kServiceUuid);
   request_characteristic = service->createCharacteristic(
       kRequestUuid,
       BLECharacteristic::PROPERTY_READ |
           BLECharacteristic::PROPERTY_NOTIFY);
-  request_characteristic->setCallbacks(new RequestCallbacks());
   request_characteristic->setValue("Azoria BLE ready");
   BLECharacteristic *response_characteristic =
       service->createCharacteristic(
@@ -516,10 +570,19 @@ bool startBleTransport(const String &device_name, const String &token) {
 }
 
 bool bleTransportReady() {
-  return central_connected && central_subscribed;
+  return central_connected;
+}
+
+bool bleTransportValidated() {
+  return central_validated;
 }
 
 void bleTransportLoop() {
+  if (advertising_restart_pending &&
+      static_cast<int32_t>(millis() - advertising_restart_at) >= 0) {
+    advertising_restart_pending = false;
+    BLEDevice::startAdvertising();
+  }
   if (ota_reboot_pending && static_cast<int32_t>(millis() - ota_reboot_at) >= 0) {
     Serial.println("BLE OTA rebooting");
     Serial.flush();

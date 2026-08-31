@@ -53,10 +53,13 @@ npm run dev
 桌面端首次启动时会在应用数据目录生成本机密钥。密钥、Wi‑Fi 密码和设备配置
 不会写入源码。主窗口可以控制显示器，并检测通过 USB 连接的小屏幕。
 
-AZORIA Touch 是可选的实体输入终端。普通用户使用已预装固件的设备，通过
-“AZORIA Touch”页写入 2.4 GHz Wi‑Fi。Touch 不主动扫描主机，而是在私有局域网
-被动等待；Desktop 主动广播发现请求，校验设备签名后向 Touch 下发本机私网地址
-和控制端口。局域网不可达时可以使用 BLE 备用连接。
+AZORIA Touch 是可选的实体输入终端。首次使用时通过 USB 点击“准备蓝牙”，随后日常通信
+可以只使用 BLE，不要求 Touch 接入 Wi‑Fi。2.4 GHz Wi‑Fi 是可选的局域网连接方式。使用 Wi‑Fi 时，Touch 不主动扫描主机，而是在私有局域网
+被动等待；Desktop 主动广播发现请求，校验协议字段和设备标识后向 Touch 下发本机私网地址
+和控制端口。BLE 和 Wi‑Fi 都可以独立作为 Touch 到 Desktop 的连接路径。
+
+Touch 通过 Wi‑Fi 或 BLE 建立连接后，由 Desktop 状态响应同步当前 Unix 时间和主机时区
+偏移，因此屏幕时间跟随当前 Desktop，不依赖固定时区或单独的公网 NTP 服务。
 
 固件开发、恢复或测试时，在 AZORIA Desktop 设置中开启“开发者模式”，再进入
 出现的“开发者”页。选择本地 AZORIA Touch `.bin` 固件后，程序会校验镜像类型、
@@ -89,16 +92,26 @@ cd firmware
 pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port /dev/cu.usbmodemXXXX
 ```
 
-AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名单 IPC 完成。
-运行时不连接云服务、遥测或公网校时服务，并阻止桌面 WebView 发起公网 HTTP/HTTPS 请求。
-局域网发现和控制服务只监听私有 IPv4 地址，并限制为同一子网。局域网协议不做身份认证，
-应仅在可信局域网中使用。
+AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名单 IPC 完成。Desktop
+可以主动发起公网 HTTP/HTTPS 请求，但显示器控制、Touch 发现和协调服务只监听私有 IPv4
+地址，并拒绝公网来源的入站请求。局域网协议不做身份认证，应仅在可信局域网中使用。
 
 ## 显示器配置表
 
 显示器控制协议统一为 DDC/CI。Desktop 会区分两种承载路径：显示器 USB 控制接口
 提供的“USB HID → DDC/CI”，以及 HDMI、DisplayPort 或 USB-C 视频连接提供的
 “视频链路 → DDC/CI”。程序会实际探测路径，而不是只按型号猜测。
+
+这里的“USB HID”不是另一套显示器控制协议。它只是某些显示器用来承载 DDC/CI
+报文的厂商 USB 通道；亮度、音量、静音和输入源最终仍以 DDC/CI VCP 功能进行表达。
+常用 VCP opcode 如下。配置表中的数字使用 JSON 十进制写法：
+
+| 能力 | VCP opcode | JSON 十进制 |
+| --- | --- | ---: |
+| 亮度 | `0x10` | `16` |
+| 音量 | `0x62` | `98` |
+| 静音 | `0x8D` | `141` |
+| 输入源 | `0x60` | `96` |
 
 内置配置表位于 `desktop/profiles/`，描述显示器识别条件、VCP opcode、输入源编码和
 每项能力的承载路径优先级。设置页可以加载一份 JSON 配置表；文件经过结构和数值范围
@@ -111,6 +124,78 @@ USB HID 报文封装可能因厂商而异，因此配置表只能引用软件内
 
 显示器硬件访问集中在 `sidecar/`。Sidecar 随 Desktop 构建和发布，运行时无需另外安装
 DDC 控制工具。
+
+### 配置表字段
+
+配置表是 Desktop 与显示器硬件适配层之间的声明式契约，不包含可执行命令。一个完整配置
+由识别条件、能力路由、USB HID 映射和视频链路 DDC/CI 映射组成。
+
+| 字段 | 含义 |
+| --- | --- |
+| `id` | 配置的稳定标识，只允许小写字母、数字和连字符，长度为 2–64。用户配置与内置配置同名时，以用户配置为准。 |
+| `name` | 面向用户显示的型号名称，最长 80 个字符。 |
+| `fallback` | 可选。设为 `true` 表示没有匹配到专用型号时使用的通用配置。 |
+| `match.displayNamePattern` | 可选、不区分大小写的正则表达式，用于匹配操作系统报告的显示器名称，最长 120 个字符。 |
+| `match.usbHid.vendorId` | 可选的 USB Vendor ID，使用十进制整数 `0–65535`。 |
+| `match.usbHid.productId` | 可选的 USB Product ID，使用十进制整数 `0–65535`。VID/PID 必须同时匹配。 |
+| `routes` | `brightness`、`volume`、`mute`、`input` 四项能力各自的承载路径优先级。每项都必须至少有一条路径。 |
+| `usbHid` | 当任一路由包含 `usb-hid-ddc` 时必填，描述已内置 USB HID 适配器及其 VCP 映射。 |
+| `ddc` | 当任一路由包含 `video-ddc` 时必填，描述视频链路上的输入源读写编码。 |
+
+Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `routes` 从左到右为每项
+能力选择路径。运行中某项能力连续读取失败三次后，只对该能力尝试下一条可用路径；例如亮度
+回退到视频 DDC/CI 时，输入源仍可以继续走 USB HID。可用路径只有：
+
+- `usb-hid-ddc`：通过显示器的 USB HID 控制接口承载 DDC/CI；
+- `video-ddc`：通过 HDMI、DisplayPort 或 USB-C 视频链路承载 DDC/CI。
+
+`usbHid` 对象字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `adapter` | USB 报文封装适配器。目前只接受内置的 `lg-monitor-controls-v1`。 |
+| `vcp` | 四项能力对应的 8 位 VCP opcode，JSON 中写十进制 `0–255`。 |
+| `inputWriteMode` | `vcp` 表示用输入源 VCP 及 `inputValues` 写入；`vendor-private` 表示调用该适配器内置的厂商输入切换命令。 |
+| `inputValues` | 该 USB HID 路径返回和写入的输入源编码，键为 `dp1`、`hdmi1`、`hdmi2`、`usbc`，值为整数。`vendor-private` 模式写入时由适配器处理，但读取仍使用此表解码。 |
+
+`ddc` 对象字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `inputReadValues` | 将显示器读取到的原始输入源值转换成 Desktop 的逻辑输入源。JSON 对象键是原始数值的十进制字符串。 |
+| `inputWriteValues` | 将 `dp1`、`hdmi1`、`hdmi2`、`usbc` 转换成写给显示器的原始值。值使用十进制字符串，写入时转换为整数。 |
+| `inputWriteFeature` | 输入源写入编码族：`input` 表示标准输入源编码，`input-alt` 表示厂商替代编码。当前 Rust Sidecar 均通过 VCP `0x60` 写入，实际差异由 `inputWriteValues` 表达。 |
+
+读取值与写入值是两个独立映射。部分显示器在 Get VCP、Set VCP、USB HID 和视频链路上
+使用不同编码，甚至会返回超出标准 MCCS 表的值，因此不能把 `inputReadValues` 反转后直接
+用于写入。所有非标准值都应从真实硬件的稳定回读和写入测试中取得。
+
+### LG 32UQ85R 配置说明
+
+`desktop/profiles/lg-32uq85r.json` 可以这样理解：
+
+- `displayNamePattern` 匹配系统报告的 `LG … 32UQ85…`；USB `1086:39481` 对应十六进制
+  VID/PID `043E:9A39`，任一识别条件匹配即可选择这份专用配置；
+- 四项能力都优先使用 `usb-hid-ddc`，探测不可用时回退到 `video-ddc`；
+- USB HID 路径使用 `lg-monitor-controls-v1` 封装，`16`、`98`、`141`、`96` 分别是
+  VCP `0x10`、`0x62`、`0x8D`、`0x60`；
+- 输入切换使用 LG 厂商命令，而 USB 路径的输入源回读值由 `inputValues` 解码；
+- 视频 DDC/CI 路径会把读取到的 `15`、`17`、`18`、`27`、`3840` 转换成界面使用的
+  输入源名称；写入则采用 `208`、`144`、`145`、`210` 这组经硬件验证的替代编码；
+- 同一个原始值在通用配置与专用配置中可能有不同含义，专用配置应以对应型号的真实行为为准。
+
+### 增加显示器型号
+
+1. 复制 `desktop/profiles/generic-ddc.json`，使用新的稳定 `id` 命名文件；
+2. 记录操作系统显示器名称，并通过 USB 枚举确认十六进制 VID/PID，再转换成 JSON 十进制；
+3. 分别测试亮度、音量、静音、输入源在 USB HID 和视频 DDC/CI 上的读写能力；
+4. 为每项能力按可靠性填写 `routes`，不要声明未经测试的路径；
+5. 对每个输入源分别记录读取原始值与成功写入值，不要假定二者相同；
+6. 在 Desktop 设置中导入配置并查看本地诊断日志，确认写入后的回读值和实际显示器状态一致；
+7. 提交内置配置前，应在断开 USB、切换视频口、睡眠唤醒和重启后重新验证回退行为。
+
+配置加载器会拒绝非法 ID、过长名称或正则、未知路径、越界 VID/PID 和 VCP opcode，以及
+未内置的 USB HID 适配器。配置文件不能指定程序、命令参数、动态库或网络地址。
 
 ## 本地诊断日志
 

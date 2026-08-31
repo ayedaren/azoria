@@ -185,6 +185,28 @@ void handleLine(String line) {
     scanNetworks();
     return;
   }
+  constexpr char pair_prefix[] = "AZORIA_PAIR ";
+  if (line.startsWith(pair_prefix)) {
+    String token = formValue(line.substring(sizeof(pair_prefix) - 1), "token");
+    if (token.length() < 20 || token.length() > 128) {
+      Serial.println("AZORIA_ERROR invalid pairing token");
+      return;
+    }
+    DeviceConfig config;
+    loadDeviceConfig(config);
+    config.token = token;
+    if (config.port == 0) config.port = 8732;
+    if (!config.valid()) {
+      Serial.println("AZORIA_ERROR invalid pairing configuration");
+      return;
+    }
+    saveDeviceConfig(config);
+    Serial.println("AZORIA_OK Bluetooth pairing saved");
+    Serial.flush();
+    delay(250);
+    ESP.restart();
+    return;
+  }
   constexpr char prefix[] = "AZORIA_CONFIG ";
   if (!line.startsWith(prefix)) return;
 
@@ -195,7 +217,7 @@ void handleLine(String line) {
   config.host = formValue(form, "host");
   config.port = static_cast<uint16_t>(formValue(form, "port").toInt());
   config.token = formValue(form, "token");
-  if (!config.valid()) {
+  if (config.ssid.isEmpty() || !config.valid()) {
     Serial.println("AZORIA_ERROR invalid configuration");
     return;
   }

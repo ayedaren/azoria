@@ -12,6 +12,7 @@ const coordinationPort = 8734
 const heartbeatIntervalMs = 700
 const peerMaxAgeMs = 2400
 const commandCacheMs = 30000
+const reachabilityCacheMs = 5000
 const activeControllers = new Set<LanController>()
 
 type PrivateInterface = { address: string; netmask: string; broadcast: string }
@@ -71,6 +72,7 @@ export class LanController {
   private heartbeatSequence = 0
   private reachable = false
   private lastProbeAt = 0
+  private reachabilityProbe?: Promise<boolean>
   private masterId = ""
   private isMaster = false
 
@@ -111,13 +113,23 @@ export class LanController {
     })
   }
 
+  private probeLocalReachability(maxAgeMs = reachabilityCacheMs): Promise<boolean> {
+    if (Date.now() - this.lastProbeAt < maxAgeMs) return Promise.resolve(this.reachable)
+    if (this.reachabilityProbe) return this.reachabilityProbe
+    this.reachabilityProbe = this.monitor.reachable()
+      .catch(() => false)
+      .then((reachable) => {
+        this.reachable = reachable
+        this.lastProbeAt = Date.now()
+        return reachable
+      })
+      .finally(() => { this.reachabilityProbe = undefined })
+    return this.reachabilityProbe
+  }
+
   private async sendHeartbeat(socket: Socket, network: PrivateInterface): Promise<void> {
     const now = Date.now()
-    if (now - this.lastProbeAt >= 1400) {
-      this.lastProbeAt = now
-      try { this.reachable = await this.monitor.reachable() }
-      catch { this.reachable = false }
-    }
+    if (now - this.lastProbeAt >= reachabilityCacheMs) void this.probeLocalReachability()
     if (!this.reachable && this.isMaster) this.releaseMaster(socket, network)
     this.peers.set(this.desktopId, { id: this.desktopId, address: network.address, reachable: this.reachable, master: false, seenAt: Date.now() })
     this.refreshMaster()
@@ -234,12 +246,26 @@ export class LanController {
     })
   }
 
-  relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]> {
+  async relayControl(request: ControlRequest, sourceNonce: string, sourceCommandId: string): Promise<ControlRequest["value"]> {
     if (!/^[0-9a-f]{8}$/i.test(sourceNonce) || !/^\d+$/.test(sourceCommandId)) throw new Error("蓝牙转发命令标识无效")
     const entry = this.coordination.values().next().value as { socket: Socket; network: PrivateInterface } | undefined
-    if (!entry) throw new Error("没有可用的局域网接口")
     const encoded = typeof request.value === "boolean" ? (request.value ? "1" : "0") : String(request.value)
     if (this.parseControl(request.control, encoded) === undefined) throw new Error("蓝牙转发命令值无效")
+    this.reachable = await this.probeLocalReachability(2500)
+    this.peers.set(this.desktopId, {
+      id: this.desktopId,
+      address: entry?.network.address || "127.0.0.1",
+      reachable: this.reachable,
+      master: false,
+      seenAt: Date.now(),
+    })
+    const master = this.refreshMaster()
+    if (this.reachable && master === this.desktopId) {
+      this.isMaster = true
+      const status = await this.monitor.control(request, "touch")
+      return status[request.control]
+    }
+    if (!entry) throw new Error("没有可用的局域网接口")
     const touchId = this.desktopId.slice(0, 12).toUpperCase()
     const key = `${touchId}:${sourceNonce.toLowerCase()}:${sourceCommandId}`
     const unsigned = `AZORIA_TOUCH_COMMAND_V1|${touchId}|${sourceNonce.toLowerCase()}|${sourceCommandId}|${request.control}|${encoded}|${request.final === false ? 0 : 1}`
@@ -257,8 +283,25 @@ export class LanController {
   }
 
   async relayStatus(): Promise<MonitorStatus> {
-    const master = this.refreshMaster()
-    if (master === this.desktopId) return this.monitor.status()
+    let master = this.refreshMaster()
+    if (!master) {
+      const entry = this.coordination.values().next().value as { network: PrivateInterface } | undefined
+      this.reachable = await this.probeLocalReachability(2500)
+      this.peers.set(this.desktopId, {
+        id: this.desktopId,
+        address: entry?.network.address || "127.0.0.1",
+        reachable: this.reachable,
+        master: false,
+        seenAt: Date.now(),
+      })
+      master = this.refreshMaster()
+    }
+    if (master === this.desktopId) {
+      // BLE heartbeat must not wait for a full multi-VCP DDC/CI read. The
+      // regular Desktop probe keeps this snapshot current; control writes still
+      // perform their own targeted readback before acknowledgement.
+      return { ...this.monitor.snapshot(), available: this.reachable }
+    }
     const now = Date.now()
     const peer = (master ? this.peers.get(master) : undefined) || [...this.peers.values()]
       .filter((candidate) => candidate.reachable && now - candidate.seenAt <= peerMaxAgeMs)
@@ -297,7 +340,7 @@ export class LanController {
       if (this.commandResults.has(command.key)) return
       const currentMaster = this.refreshMaster()
       if (currentMaster && currentMaster !== this.desktopId) return
-      this.reachable = await this.monitor.reachable()
+      this.reachable = await this.probeLocalReachability(2500)
       this.peers.set(this.desktopId, { id: this.desktopId, address: network.address, reachable: this.reachable, master: this.isMaster, seenAt: Date.now() })
       if (!this.reachable) {
         this.releaseMaster(socket, network)
@@ -320,6 +363,7 @@ export class LanController {
       socket.send(Buffer.from(wire), discoveryPort, touchAddress)
     } catch {
       this.reachable = false
+      this.lastProbeAt = Date.now()
       this.releaseMaster(socket, network)
     } finally {
       this.claims.delete(command.key)
@@ -335,6 +379,14 @@ export class LanController {
   private json(response: ServerResponse, status: number, body: unknown): void {
     response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" })
     response.end(JSON.stringify(body))
+  }
+
+  private clock(): { unixTime: number; timezoneOffsetMinutes: number } {
+    const now = new Date()
+    return {
+      unixTime: Math.floor(now.getTime() / 1000),
+      timezoneOffsetMinutes: -now.getTimezoneOffset(),
+    }
   }
 
   private async body(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -354,7 +406,15 @@ export class LanController {
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.authorized(request)) return this.json(response, 401, { ok: false, error: "unauthorized" })
     try {
-      if (request.method === "GET" && request.url === "/v1/status") return this.json(response, 200, await this.monitor.status())
+      if (request.method === "GET" && request.url === "/v1/status") {
+        try {
+          return this.json(response, 200, { ...await this.monitor.status(), available: true, ...this.clock() })
+        } catch {
+          // The HTTP response proves that Touch can reach this Desktop. DDC/CI
+          // eligibility is a separate state and must not tear down discovery.
+          return this.json(response, 200, { ...this.monitor.snapshot(), available: false, ...this.clock() })
+        }
+      }
       if (request.method === "POST" && request.url === "/v1/control") {
         if (this.refreshMaster() !== this.desktopId || !this.reachable) return this.json(response, 409, { ok: false, error: "not active DDC/CI host" })
         const payload = await this.body(request)

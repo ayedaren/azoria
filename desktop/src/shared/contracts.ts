@@ -7,6 +7,7 @@ export interface MonitorStatus {
   volume: number
   mute: boolean
   input: InputSource
+  available?: boolean
 }
 
 export interface ControlRequest {
@@ -66,6 +67,7 @@ export interface DesktopApi {
     verifyUsb(path: string): Promise<{ chip: string; mac: string }>
     scanWifi(path: string): Promise<Array<{ ssid: string; rssi: number; secure: boolean }>>
     configureWifi(path: string, ssid: string, password: string): Promise<void>
+    prepareBle(path: string): Promise<void>
     selectFirmware(): Promise<FirmwareImage | null>
     flash(path: string, firmwarePath: string, expectedSha256: string): Promise<void>
   }

@@ -8,6 +8,7 @@ import type { LocalLogger } from "./logger"
 
 const run = promisify(execFile)
 const controls: ControlName[] = ["brightness", "volume", "mute", "input"]
+const inputSources: InputSource[] = ["dp1", "hdmi1", "hdmi2", "usbc"]
 const transportIds: MonitorTransport[] = ["usb-hid-ddc", "video-ddc"]
 export type ControlSource = "desktop-ui" | "touch" | "desktop-peer" | "internal"
 
@@ -39,7 +40,15 @@ interface SidecarResponse {
 const initialStatus: MonitorStatus = { brightness: 50, volume: 20, mute: false, input: "usbc" }
 
 function isInput(value: unknown): value is InputSource {
-  return typeof value === "string" && ["dp1", "hdmi1", "hdmi2", "usbc"].includes(value)
+  return typeof value === "string" && inputSources.includes(value as InputSource)
+}
+
+function isUnsigned16(value: unknown): boolean {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 65535
+}
+
+function isUnsigned16Text(value: unknown): boolean {
+  return typeof value === "string" && /^\d{1,5}$/.test(value) && isUnsigned16(Number(value))
 }
 
 function percentage(value: number): number {
@@ -69,6 +78,15 @@ function validateProfile(value: unknown): MonitorProfile {
     return !Number.isInteger(opcode) || opcode! < 0 || opcode! > 255
   })) throw new Error("DDC/CI VCP 映射无效")
   if (profile.usbHid && profile.usbHid.adapter !== "lg-monitor-controls-v1") throw new Error("配置档引用了未内置的 USB HID DDC/CI 适配器")
+  if (profile.usbHid && (!["vcp", "vendor-private"].includes(profile.usbHid.inputWriteMode) ||
+      inputSources.some((input) => !isUnsigned16(profile.usbHid?.inputValues?.[input])))) {
+    throw new Error("USB HID 输入源映射无效")
+  }
+  if (profile.ddc && ((profile.ddc.inputWriteFeature !== "input" && profile.ddc.inputWriteFeature !== "input-alt") ||
+      !profile.ddc.inputReadValues || Object.entries(profile.ddc.inputReadValues).some(([raw, input]) => !isUnsigned16Text(raw) || !isInput(input)) ||
+      inputSources.some((input) => !isUnsigned16Text(profile.ddc?.inputWriteValues?.[input])))) {
+    throw new Error("视频链路输入源映射无效")
+  }
   if (profile.match?.usbHid && (!Number.isInteger(profile.match.usbHid.vendorId) || !Number.isInteger(profile.match.usbHid.productId) ||
       profile.match.usbHid.vendorId < 0 || profile.match.usbHid.vendorId > 65535 ||
       profile.match.usbHid.productId < 0 || profile.match.usbHid.productId > 65535)) throw new Error("USB HID 识别条件无效")
@@ -345,6 +363,10 @@ export class MonitorController {
     return this.enqueue(() => this.readStatus())
   }
 
+  snapshot(): MonitorStatus {
+    return { ...this.lastStatus }
+  }
+
   private async checkReachable(): Promise<boolean> {
     await this.detect(true)
     for (const transport of this.candidates("brightness")) {
@@ -435,10 +457,12 @@ export class MonitorController {
                 this.logger?.warn("control.readback_mismatch", {
                   operation, control, transport, requested: String(value), first: String(first), second: String(second),
                 })
+                throw new Error("显示器回读值与写入值不一致")
               }
             }
           }
           catch (error) {
+            if (verification === "mismatch") throw error
             this.logger?.warn("control.readback_failed", {
               operation, control, transport, error: error instanceof Error ? error.message : "unknown",
             })

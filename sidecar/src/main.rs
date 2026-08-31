@@ -118,18 +118,28 @@ fn native_set(display: usize, vcp: u8, value: u16) -> Result<Value, String> {
 }
 
 fn lg_device() -> Result<HidDevice, String> {
-    HidApi::new()
-        .map_err(|error| format!("HID initialization failed: {error}"))?
-        .open(LG_VENDOR_ID, LG_PRODUCT_ID)
+    let api = HidApi::new().map_err(|error| format!("HID initialization failed: {error}"))?;
+    // macOS opens HID devices exclusively by default. LG Monitor Controls is a
+    // shared vendor interface, and exclusive open can be rejected by IOKit or
+    // prevent the display's own software from using it.
+    #[cfg(target_os = "macos")]
+    api.set_open_exclusive(false);
+    api.open(LG_VENDOR_ID, LG_PRODUCT_ID)
         .map_err(|error| format!("LG Monitor Controls HID 043e:9a39 is not connected: {error}"))
 }
 
 fn hid_write(device: &HidDevice, report: &[u8; REPORT_SIZE]) -> Result<(), String> {
     let mut wire = [0_u8; REPORT_SIZE + 1];
     wire[1..].copy_from_slice(report);
-    device
+    let written = device
         .write(&wire)
         .map_err(|error| format!("LG HID write failed: {error}"))?;
+    if written != wire.len() {
+        return Err(format!(
+            "LG HID write was truncated: {written}/{} bytes",
+            wire.len()
+        ));
+    }
     Ok(())
 }
 

@@ -2,6 +2,7 @@
 
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <sys/time.h>
 #include <WiFiUdp.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -39,10 +40,15 @@ constexpr uint16_t kCoordinationPort = 8734;
 constexpr uint32_t kDefaultRequestTimeoutMs = 2800;
 constexpr uint32_t kFinalRequestTimeoutMs = 9000;
 constexpr uint32_t kPreviewMaxAgeMs = 900;
-constexpr uint32_t kFinalMaxAgeMs = 1800;
+// Status and master-election probes may already be in flight when the user
+// releases a control. Each control keeps only its latest value, so retaining a
+// final command long enough to outlive those probes cannot replay superseded
+// slider values.
+constexpr uint32_t kFinalMaxAgeMs = 20000;
 constexpr uint32_t kStatusRequestTimeoutMs = 8000;
 constexpr uint32_t kConfirmedSettleMs = 2000;
 constexpr uint32_t kRegistrationIntervalMs = 30000;
+constexpr uint32_t kBleHealthIntervalMs = 5000;
 constexpr uint32_t kIdleStatusIntervalMs = 30000;
 constexpr char kFirmwareVersion[] = "0.4.17";
 Command latest_commands[static_cast<size_t>(ControlKind::Count)]{};
@@ -314,6 +320,26 @@ bool jsonBool(const String &json, const char *key, bool fallback) {
          json.startsWith("false", start) ? false : fallback;
 }
 
+void syncDesktopClock(const String &json) {
+  int unix_time = jsonInt(json, "unixTime", 0);
+  int offset_minutes = jsonInt(json, "timezoneOffsetMinutes", 0);
+  if (unix_time < 1577836800 || offset_minutes < -720 ||
+      offset_minutes > 840) {
+    return;
+  }
+  timeval clock{static_cast<time_t>(unix_time), 0};
+  settimeofday(&clock, nullptr);
+
+  // POSIX TZ offsets use the opposite sign from minutes east of UTC.
+  int posix_minutes = -offset_minutes;
+  char timezone[24];
+  snprintf(timezone, sizeof(timezone), "UTC%c%d:%02d",
+           posix_minutes < 0 ? '-' : '+', abs(posix_minutes) / 60,
+           abs(posix_minutes) % 60);
+  setenv("TZ", timezone, 1);
+  tzset();
+}
+
 String jsonString(const String &json, const char *key, const char *fallback) {
   int start = jsonValueStart(json, key);
   if (start < 0 || start >= static_cast<int>(json.length()) ||
@@ -359,6 +385,17 @@ bool wifiRequest(const char *method, const String &path, const char *body,
 bool request(const char *method, const String &path, const char *body,
              String &response,
              uint32_t timeout_ms = kDefaultRequestTimeoutMs) {
+  static uint32_t last_ble_health_check = 0;
+  if (!strcmp(method, "GET") && path == "/v1/status" &&
+      bleTransportReady() && bleTransportValidated() &&
+      millis() - last_ble_health_check >= kBleHealthIntervalMs) {
+    last_ble_health_check = millis();
+    if (bleTransportRequest(method, path, body, response,
+                            min(timeout_ms, 2500UL))) {
+      Serial.println("TRANSPORT=BLE,path=/v1/status,health=1");
+      return true;
+    }
+  }
   if (WiFi.status() == WL_CONNECTED && !remote_config.host.isEmpty()) {
     bool accepted = wifiRequest(method, path, body, response, timeout_ms);
     if (accepted) {
@@ -366,7 +403,7 @@ bool request(const char *method, const String &path, const char *body,
       return true;
     }
   }
-  if (bleTransportReady() &&
+  if (bleTransportValidated() &&
       bleTransportRequest(method, path, body, response, timeout_ms)) {
     Serial.printf("TRANSPORT=BLE,path=%s\n", path.c_str());
     return true;
@@ -420,13 +457,11 @@ void handlePassiveDiscovery() {
   if (wireField(wire, 0) == "AZORIA_DESKTOP_HEARTBEAT_V1" &&
       wireFieldCount(wire) == 6) {
     String advertised_address = wireField(wire, 2);
-    bool reachable = wireField(wire, 3) == "1";
     if (advertised_address != sender.toString()) return;
-    if (reachable) {
-      remote_config.host = advertised_address;
-      remote_config.port = 8732;
-      desktop_address_was_discovered = true;
-    }
+    remote_config.host = advertised_address;
+    remote_config.port = 8732;
+    desktop_address_was_discovered = true;
+    wakeRemoteTask();
     return;
   }
 
@@ -528,22 +563,26 @@ bool readStatus() {
   int volume = constrain(jsonInt(response, "volume", remote_state.volume), 0, 100);
   bool muted = jsonBool(response, "mute", remote_state.muted);
   String input = jsonString(response, "input", remote_state.input);
+  bool ddc_available = jsonBool(response, "available", true);
+  syncDesktopClock(response);
   uint32_t now = millis();
   bool brightness_writable =
       statusCanOverwriteLocked(ControlKind::Brightness, now);
   bool volume_writable = statusCanOverwriteLocked(ControlKind::Volume, now);
   bool mute_writable = statusCanOverwriteLocked(ControlKind::Mute, now);
   bool input_writable = statusCanOverwriteLocked(ControlKind::Input, now);
-  bool changed = !remote_state.ready || !remote_state.online ||
+  const char *status_message =
+      ddc_available ? "DDC connected" : "Desktop connected";
+  bool changed = remote_state.ready != ddc_available || !remote_state.online ||
                  (brightness_writable &&
                   remote_state.brightness != brightness) ||
                  (volume_writable && remote_state.volume != volume) ||
                  (mute_writable && remote_state.muted != muted) ||
                  (input_writable && strcmp(remote_state.input, input.c_str())) ||
                  strcmp(remote_state.message,
-                        anyPendingLocked() ? "Saving changes" : "DDC connected");
+                        anyPendingLocked() ? "Saving changes" : status_message);
   if (changed) {
-    remote_state.ready = true;
+    remote_state.ready = ddc_available;
     remote_state.online = true;
     if (brightness_writable) remote_state.brightness = brightness;
     if (volume_writable) remote_state.volume = volume;
@@ -552,7 +591,7 @@ bool readStatus() {
       strlcpy(remote_state.input, input.c_str(), sizeof(remote_state.input));
     }
     strlcpy(remote_state.message,
-            anyPendingLocked() ? "Saving changes" : "DDC connected",
+            anyPendingLocked() ? "Saving changes" : status_message,
             sizeof(remote_state.message));
     ++remote_state.revision;
   }
@@ -715,11 +754,24 @@ CommandResult runCommand(const Command &command) {
           command, response,
           command.final_value ? kFinalRequestTimeoutMs
                               : kDefaultRequestTimeoutMs);
-    } else if (bleTransportReady()) {
+      Serial.printf("TRANSPORT=WIFI_COORDINATION,path=/v1/control,accepted=%d\n",
+                    accepted ? 1 : 0);
+    }
+    if (!accepted &&
+        (!isLatestCommand(command) || commandExpired(command))) {
+      Serial.printf("DDC_SUPERSEDED,CONTROL=%s,SEQ=%lu,FINAL=%d\n",
+                    controlName(command.kind),
+                    static_cast<unsigned long>(command.sequence),
+                    command.final_value ? 1 : 0);
+      return CommandResult::Superseded;
+    }
+    if (!accepted && bleTransportValidated()) {
       accepted = bleTransportRequest(
           "POST", "/v1/control", body, response,
           command.final_value ? kFinalRequestTimeoutMs
                               : kDefaultRequestTimeoutMs);
+      Serial.printf("TRANSPORT=BLE,path=/v1/control,accepted=%d\n",
+                    accepted ? 1 : 0);
     }
     if (!command.final_value) {
       if (!accepted) {
@@ -763,8 +815,9 @@ void remoteTask(void *) {
   uint32_t last_status = 0;
   uint32_t last_registration = 0;
   bool desktop_verified = false;
+  uint8_t consecutive_status_failures = 0;
   for (;;) {
-    bool ble_ready = bleTransportReady();
+    bool ble_ready = bleTransportValidated();
     bool wifi_ready = WiFi.status() == WL_CONNECTED;
     handlePassiveDiscovery();
     if ((!wifi_ready || remote_config.host.isEmpty()) && !ble_ready) {
@@ -784,10 +837,14 @@ void remoteTask(void *) {
         last_registration = millis();
       }
       if (!readStatus()) {
-        if (!bleTransportReady()) invalidateDiscoveredDesktop();
+        if (++consecutive_status_failures >= 3) {
+          invalidateDiscoveredDesktop();
+          consecutive_status_failures = 0;
+        }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(900));
         continue;
       }
+      consecutive_status_failures = 0;
       desktop_verified = true;
       last_status = millis();
     } else if (wifi_ready && !remote_config.host.isEmpty() &&
@@ -808,7 +865,9 @@ void remoteTask(void *) {
     if (millis() - last_status >= kIdleStatusIntervalMs) {
       if (!readStatus()) {
         desktop_verified = false;
-        if (!bleTransportReady()) invalidateDiscoveredDesktop();
+        ++consecutive_status_failures;
+      } else {
+        consecutive_status_failures = 0;
       }
       last_status = millis();
     }

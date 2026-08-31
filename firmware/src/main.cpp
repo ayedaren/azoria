@@ -38,6 +38,7 @@ uint32_t display_full_redraw_count = 0;
 bool display_full_redraw_requested = false;
 bool display_full_redraw_pending = false;
 constexpr uint32_t kRuntimeDiagnosticIntervalMs = 60000;
+constexpr uint32_t kWiFiRetryIntervalMs = 30000;
 constexpr TickType_t kFrameBoundaryTimeout = pdMS_TO_TICKS(250);
 // The FT6336U is sampled every 8 ms. A real contact persists across reports,
 // while electrical noise and stale event records are normally isolated.
@@ -60,7 +61,7 @@ IRAM_ATTR bool displayRefreshFinished(void *user_data) {
     }
   }
   display_last_refresh_tick = now;
-  ++display_refresh_count;
+  display_refresh_count = display_refresh_count + 1;
   BaseType_t should_yield = pdFALSE;
   vTaskNotifyGiveFromISR(static_cast<TaskHandle_t>(user_data), &should_yield);
   return should_yield == pdTRUE;
@@ -281,22 +282,26 @@ void setup() {
   }
 
   saved_config = config;
-  have_saved_config = true;
+  have_saved_config = !saved_config.ssid.isEmpty();
   DisplayControl::showScreen();
   // Let the Wi-Fi driver reserve its latency-sensitive internal DMA buffers
   // before NimBLE starts. The BLE host is configured to use PSRAM for dynamic
   // allocations, so both radios remain available without starving RGB DMA.
-  beginWiFi(saved_config);
   DisplayControl::startRemote(saved_config);
   remote_started = true;
-  if (waitForWiFi()) {
-    logMemory("network-ready");
+  if (!have_saved_config) {
+    Serial.println("BLE-only mode: waiting for Desktop connection");
   } else {
-    // Keep the saved station credentials and recover automatically if the
-    // router was merely unavailable during boot. USB provisioning remains
-    // available in parallel if the saved credentials really are wrong.
-    Serial.println("Wi-Fi unavailable; retrying saved network in background");
-    next_wifi_retry = millis() + 5000;
+    beginWiFi(saved_config);
+    if (waitForWiFi()) {
+      logMemory("network-ready");
+    } else {
+      // Keep the saved station credentials and recover automatically if the
+      // router was merely unavailable during boot. USB provisioning remains
+      // available in parallel if the saved credentials really are wrong.
+      Serial.println("Wi-Fi unavailable; retrying saved network in background");
+      next_wifi_retry = millis() + kWiFiRetryIntervalMs;
+    }
   }
   next_runtime_diagnostics = millis() + kRuntimeDiagnosticIntervalMs;
 }
@@ -310,11 +315,14 @@ void loop() {
   usbProvisioningLoop();
   if (have_saved_config) {
     if (WiFi.status() == WL_CONNECTED) {
-      next_wifi_retry = millis() + 5000;
+      next_wifi_retry = millis() + kWiFiRetryIntervalMs;
     } else if (static_cast<int32_t>(millis() - next_wifi_retry) >= 0) {
       Serial.println("Retrying saved Wi-Fi network");
-      WiFi.reconnect();
-      next_wifi_retry = millis() + 5000;
+      // Give each station attempt enough time to finish. Reissuing reconnect
+      // every few seconds can continuously restart association on a weak AP.
+      WiFi.disconnect(false, false);
+      WiFi.begin(saved_config.ssid.c_str(), saved_config.password.c_str());
+      next_wifi_retry = millis() + kWiFiRetryIntervalMs;
     }
   }
   if (!provisioning) {

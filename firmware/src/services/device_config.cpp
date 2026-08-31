@@ -22,8 +22,9 @@ bool isLocalDesktopHost(const String &host) {
 }
 
 bool DeviceConfig::valid() const {
-  return !ssid.isEmpty() && token.length() >= 20 && port > 0 &&
-         isLocalDesktopHost(host);
+  // Wi-Fi is optional. The token is provisioned once over physical USB and is
+  // then used to authenticate BLE traffic without requiring a network.
+  return token.length() >= 20 && port > 0 && isLocalDesktopHost(host);
 }
 
 bool loadDeviceConfig(DeviceConfig &config) {

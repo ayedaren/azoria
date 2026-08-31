@@ -120,7 +120,10 @@ export class TouchManager {
     return new Promise((resolve, reject) => {
       const port = new SerialPort({ path: devicePath, baudRate: 115200, autoOpen: false })
       let received = ""
+      let settled = false
       const finish = (error?: Error) => {
+        if (settled) return
+        settled = true
         clearTimeout(timer)
         const complete = () => { this.active = false; error ? reject(error) : resolve(received) }
         port.isOpen ? port.close(() => complete()) : complete()
@@ -156,6 +159,12 @@ export class TouchManager {
     if (new TextEncoder().encode(password).length > 63) throw new Error("Wi‑Fi 密码过长")
     const values = new URLSearchParams({ ssid, pass: password, host: "", port: "8732", token: this.token })
     await this.exchange(devicePath, `AZORIA_CONFIG ${values}\n`, "AZORIA_OK", 30000)
+  }
+
+  async prepareBle(devicePath: string): Promise<void> {
+    await this.assertDevice(devicePath)
+    const values = new URLSearchParams({ token: this.token })
+    await this.exchange(devicePath, `AZORIA_PAIR ${values}\n`, "AZORIA_OK", 5000)
   }
 
   async flash(devicePath: string, firmwarePath: string, expectedSha256: string): Promise<void> {
