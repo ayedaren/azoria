@@ -13,10 +13,12 @@ const heartbeatIntervalMs = 700
 const peerMaxAgeMs = 2400
 const commandCacheMs = 30000
 const reachabilityCacheMs = 5000
+const touchMaxAgeMs = 75000
 const activeControllers = new Set<LanController>()
 
 type PrivateInterface = { address: string; netmask: string; broadcast: string }
 type Peer = { id: string; address: string; reachable: boolean; master: boolean; seenAt: number }
+type TouchDevice = { device: LanDevice; seenAt: number }
 
 function ipv4Number(value: string): number | undefined {
   const parts = value.split(".").map(Number)
@@ -70,6 +72,7 @@ export class LanController {
   private readonly claims = new Map<string, string>()
   private readonly commandResults = new Map<string, { wire: string; expiresAt: number }>()
   private readonly inflightCommands = new Set<string>()
+  private readonly touchDevices = new Map<string, TouchDevice>()
   private readonly relayWaiters = new Map<string, { control: ControlRequest["control"]; resolve(value: ControlRequest["value"]): void; reject(error: Error): void; timeout: NodeJS.Timeout; repeat: NodeJS.Timeout }>()
   private heartbeatSequence = 0
   private reachable = false
@@ -193,6 +196,29 @@ export class LanController {
     return Number.isInteger(value) && value >= 0 && value <= 100 ? value : undefined
   }
 
+  private rememberTouch(id: string, address: string, details?: { name?: string; firmware?: string }): void {
+    if (!/^[0-9A-F]{12}$/i.test(id) || !isPrivateIpv4(address)) return
+    const existing = this.touchDevices.get(id)?.device
+    const name = details?.name && /^azoria-touch-[a-z0-9-]{1,32}$/i.test(details.name)
+      ? details.name
+      : existing?.name || "AZORIA Touch"
+    const firmware = details?.firmware && details.firmware.length <= 32
+      ? details.firmware
+      : existing?.firmware || ""
+    this.touchDevices.set(id, {
+      device: { id, name, address, firmware, paired: true },
+      seenAt: Date.now(),
+    })
+  }
+
+  private activeTouches(): LanDevice[] {
+    const now = Date.now()
+    for (const [id, touch] of this.touchDevices) {
+      if (now - touch.seenAt > touchMaxAgeMs) this.touchDevices.delete(id)
+    }
+    return [...this.touchDevices.values()].map(({ device }) => device)
+  }
+
   private async handleCoordination(socket: Socket, network: PrivateInterface, message: Buffer, remote: RemoteInfo): Promise<void> {
     if (!sameSubnet(remote.address, network) || message.length > 512) return
     const fields = message.toString("utf8").split("|")
@@ -248,6 +274,7 @@ export class LanController {
         !["brightness", "volume", "mute", "input"].includes(control || "") || !["0", "1"].includes(finalValue || "")) return
     const value = this.parseControl(control!, encodedValue!)
     if (value === undefined) return
+    this.rememberTouch(touchId!, remote.address)
     const key = `${touchId}:${bootNonce}:${commandId}`
     const cached = this.commandResults.get(key)
     if (cached) {
@@ -447,7 +474,17 @@ export class LanController {
         return this.json(response, 200, { accepted: true, confirmed: payload.final !== false, value: status[control as keyof typeof status] })
       }
       if (request.method === "POST" && request.url === "/v1/device/register") {
-        await this.body(request)
+        const payload = await this.body(request)
+        const remote = request.socket.remoteAddress?.replace(/^::ffff:/, "") || ""
+        const id = typeof payload.device_id === "string" ? payload.device_id : ""
+        const name = typeof payload.hostname === "string" ? payload.hostname : ""
+        const firmware = typeof payload.firmware === "string" ? payload.firmware : ""
+        const address = typeof payload.address === "string" ? payload.address : ""
+        if (!/^[0-9A-F]{12}$/i.test(id) || !/^azoria-touch-[a-z0-9-]{1,32}$/i.test(name) ||
+            !firmware || firmware.length > 32 || address !== remote) {
+          return this.json(response, 400, { ok: false, error: "invalid device registration" })
+        }
+        this.rememberTouch(id, remote, { name, firmware })
         return this.json(response, 200, { ok: true })
       }
       return this.json(response, 404, { ok: false, error: "not found" })
@@ -459,9 +496,16 @@ export class LanController {
   async discover(): Promise<LanDevice[]> {
     await this.start()
     const results = await Promise.all(privateInterfaces().map((network) => this.discoverOn(network)))
-    const devices = new Map<string, LanDevice>()
-    for (const result of results.flat()) devices.set(result.id, result)
+    const devices = new Map(this.activeTouches().map((device) => [device.id, device]))
+    for (const result of results.flat()) {
+      this.rememberTouch(result.id, result.address, result)
+      devices.set(result.id, result)
+    }
     return [...devices.values()]
+  }
+
+  devices(): LanDevice[] {
+    return this.activeTouches()
   }
 
   private discoverOn(network: PrivateInterface): Promise<LanDevice[]> {
@@ -493,7 +537,9 @@ export class LanController {
         } else if (fields[0] === "AZORIA_TOUCH_CONFIGURED_V1" && fields.length === 3) {
           const found = pending.get(remote.address)
           if (!found || found.id !== fields[2]) return
-          devices.set(found.id, { ...found, address: remote.address, paired: true })
+          const device = { ...found, address: remote.address, paired: true }
+          this.rememberTouch(found.id, remote.address, found)
+          devices.set(found.id, device)
         }
       })
       socket.on("error", finish)
@@ -519,6 +565,7 @@ export class LanController {
       waiter.reject(new Error("Desktop 已停止"))
     }
     this.relayWaiters.clear()
+    this.touchDevices.clear()
     activeControllers.delete(this)
   }
 

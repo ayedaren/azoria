@@ -98,7 +98,7 @@ export async function connectBle(
     }
     console.info("AZORIA_BLE_CONNECT stage=chooser")
     const device = await bluetooth.requestDevice({
-      filters: [{ namePrefix: "Azoria" }, { namePrefix: "AZORIA" }],
+      filters: [{ services: [SERVICE] }],
       optionalServices: [SERVICE],
     }) as BluetoothDeviceLike
     console.info("AZORIA_BLE_CONNECT stage=device-selected")

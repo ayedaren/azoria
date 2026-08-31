@@ -14,6 +14,7 @@ const api: DesktopApi = {
   device: {
     listUsb: () => ipcRenderer.invoke("device:list-usb"),
     discoverLan: () => ipcRenderer.invoke("device:discover-lan"),
+    listLan: () => ipcRenderer.invoke("device:list-lan"),
     verifyUsb: (path: string) => ipcRenderer.invoke("device:verify-usb", path),
     scanWifi: (path: string) => ipcRenderer.invoke("device:scan-wifi", path),
     configureWifi: (path: string, ssid: string, password: string) =>

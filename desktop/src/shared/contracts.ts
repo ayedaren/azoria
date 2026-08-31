@@ -64,6 +64,7 @@ export interface DesktopApi {
   device: {
     listUsb(): Promise<UsbDevice[]>
     discoverLan(): Promise<LanDevice[]>
+    listLan(): Promise<LanDevice[]>
     verifyUsb(path: string): Promise<{ chip: string; mac: string }>
     scanWifi(path: string): Promise<Array<{ ssid: string; rssi: number; secure: boolean }>>
     configureWifi(path: string, ssid: string, password: string): Promise<void>

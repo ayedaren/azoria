@@ -120,6 +120,7 @@ void app.whenReady().then(async () => {
   })
   ipcMain.handle("device:list-usb", () => devices.listUsb())
   ipcMain.handle("device:discover-lan", () => lan.discover())
+  ipcMain.handle("device:list-lan", () => lan.devices())
   ipcMain.handle("device:verify-usb", (_event, devicePath: string) => devices.verifyUsb(devicePath))
   ipcMain.handle("device:scan-wifi", (_event, devicePath: string) => devices.scanWifi(devicePath))
   ipcMain.handle("device:configure-wifi", (_event, input: { path: string; ssid: string; password: string }) =>

@@ -80,14 +80,16 @@ export default function App() {
   const discoverLan = useCallback(async () => {
     setBusy(true)
     try {
-      const devices = await window.azoria.device.discoverLan()
-      setLanDevices(devices)
-      setMessage(devices.length ? `已连接 ${devices.length} 台 AZORIA Touch` : "局域网内未发现 AZORIA Touch")
+      setLanDevices(await window.azoria.device.discoverLan())
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "局域网搜索失败")
     } finally {
       setBusy(false)
     }
+  }, [])
+  const refreshLan = useCallback(async () => {
+    try { setLanDevices(await window.azoria.device.listLan()) }
+    catch { /* Preserve the last known device until its main-process lease expires. */ }
   }, [])
   useEffect(() => {
     if (!initializedRef.current) {
@@ -99,8 +101,9 @@ export default function App() {
     const timer = window.setInterval(() => {
       if (!editingRef.current && pendingCountRef.current === 0) void refresh()
     }, 30000)
-    return () => window.clearInterval(timer)
-  }, [refresh, detectUsb, discoverLan])
+    const lanTimer = window.setInterval(() => void refreshLan(), 2000)
+    return () => { window.clearInterval(timer); window.clearInterval(lanTimer) }
+  }, [refresh, detectUsb, discoverLan, refreshLan])
 
   const setControl = async (control: ControlName, value: number | boolean | InputSource) => {
     pendingCountRef.current++
