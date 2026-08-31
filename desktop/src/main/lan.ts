@@ -64,6 +64,8 @@ function sameSubnet(remote: string, local: PrivateInterface): boolean {
 export class LanController {
   private readonly servers: Server[] = []
   private readonly coordination = new Map<string, { socket: Socket; timer: NodeJS.Timeout; network: PrivateInterface }>()
+  private coordinationSocket?: Socket
+  private coordinationReady?: Promise<Socket>
   private readonly peers = new Map<string, Peer>()
   private readonly claims = new Map<string, string>()
   private readonly commandResults = new Map<string, { wire: string; expiresAt: number }>()
@@ -96,20 +98,31 @@ export class LanController {
 
   private coordinate(network: PrivateInterface): Promise<void> {
     if (this.coordination.has(network.address)) return Promise.resolve()
-    return new Promise((resolve) => {
+    this.coordinationReady ??= new Promise((resolve, reject) => {
       const socket = createSocket({ type: "udp4", reuseAddr: true })
-      let settled = false
-      const finish = () => { if (!settled) { settled = true; resolve() } }
-      socket.on("message", (message, remote) => { void this.handleCoordination(socket, network, message, remote) })
-      socket.once("error", finish)
-      socket.bind(coordinationPort, network.address, () => {
-        socket.setBroadcast(true)
-        const send = () => { void this.sendHeartbeat(socket, network) }
-        const timer = setInterval(send, heartbeatIntervalMs)
-        this.coordination.set(network.address, { socket, timer, network })
-        send()
-        finish()
+      socket.on("message", (message, remote) => {
+        const entry = [...this.coordination.values()].find((candidate) => sameSubnet(remote.address, candidate.network))
+        if (entry) void this.handleCoordination(socket, entry.network, message, remote)
       })
+      const bindFailed = (error: Error) => reject(error)
+      socket.once("error", bindFailed)
+      // Touch commands are subnet broadcasts. Binding to one interface's
+      // unicast address drops those packets on macOS, so receive on INADDR_ANY
+      // and select the matching private interface from the sender address.
+      socket.bind(coordinationPort, "0.0.0.0", () => {
+        socket.off("error", bindFailed)
+        socket.on("error", () => { /* A later heartbeat will retry normal traffic. */ })
+        socket.setBroadcast(true)
+        this.coordinationSocket = socket
+        resolve(socket)
+      })
+    })
+    return this.coordinationReady.then((socket) => {
+      if (this.coordination.has(network.address)) return
+      const send = () => { void this.sendHeartbeat(socket, network) }
+      const timer = setInterval(send, heartbeatIntervalMs)
+      this.coordination.set(network.address, { socket, timer, network })
+      send()
     })
   }
 
@@ -485,10 +498,10 @@ export class LanController {
   stop(): void {
     for (const server of this.servers) server.close()
     this.servers.length = 0
-    for (const { socket, timer } of this.coordination.values()) {
-      clearInterval(timer)
-      socket.close()
-    }
+    for (const { timer } of this.coordination.values()) clearInterval(timer)
+    this.coordinationSocket?.close()
+    this.coordinationSocket = undefined
+    this.coordinationReady = undefined
     this.coordination.clear()
     for (const waiter of this.relayWaiters.values()) {
       clearTimeout(waiter.timeout)
