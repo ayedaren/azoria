@@ -21,6 +21,18 @@ The project is designed to run locally. Display control, Touch discovery, and
 coordination stay on the host or trusted private network; no cloud service is
 required for normal operation.
 
+## AZORIA Touch
+
+![AZORIA Touch on a desktop control dock](docs/images/azoria-touch-desktop.jpg)
+
+| Direct touch control | ESP32-S3 prototype hardware |
+| --- | --- |
+| ![Adjusting display brightness on AZORIA Touch](docs/images/azoria-touch-interaction.jpg) | ![AZORIA Touch ESP32-S3 controller board](docs/images/azoria-touch-hardware.jpg) |
+
+The optional Touch controller puts everyday display actions within reach while
+the Desktop app handles discovery, coordination, native DDC/CI access, and
+firmware management in the background.
+
 ## Why AZORIA
 
 - **One control surface** for brightness, volume, mute, and input switching.
