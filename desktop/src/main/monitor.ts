@@ -22,7 +22,8 @@ interface MonitorProfile {
     adapter: "lg-monitor-controls-v1"
     vcp: Record<ControlName, number>
     inputWriteMode: "vendor-private" | "vcp"
-    inputValues: Record<InputSource, number>
+    inputReadValues: Record<string, InputSource>
+    inputWriteValues?: Record<InputSource, number>
   }
   ddc?: {
     inputReadValues: Record<string, InputSource>
@@ -80,7 +81,11 @@ function validateProfile(value: unknown): MonitorProfile {
   })) throw new Error("DDC/CI VCP 映射无效")
   if (profile.usbHid && profile.usbHid.adapter !== "lg-monitor-controls-v1") throw new Error("配置档引用了未内置的 USB HID DDC/CI 适配器")
   if (profile.usbHid && (!["vcp", "vendor-private"].includes(profile.usbHid.inputWriteMode) ||
-      inputSources.some((input) => !isUnsigned16(profile.usbHid?.inputValues?.[input])))) {
+      !profile.usbHid.inputReadValues ||
+      Object.entries(profile.usbHid.inputReadValues).some(([raw, input]) => !isUnsigned16Text(raw) || !isInput(input)) ||
+      (profile.usbHid.inputWriteValues &&
+       inputSources.some((input) => !isUnsigned16(profile.usbHid?.inputWriteValues?.[input]))) ||
+      (profile.usbHid.inputWriteMode === "vcp" && !profile.usbHid.inputWriteValues))) {
     throw new Error("USB HID 输入源映射无效")
   }
   if (profile.ddc && ((profile.ddc.inputWriteFeature !== "input" && profile.ddc.inputWriteFeature !== "input-alt") ||
@@ -301,7 +306,7 @@ export class MonitorController {
       const current = Number(result.current)
       if (control === "brightness" || control === "volume") return percentage(current)
       if (control === "mute") return current === 1
-      return Object.entries(this.profile.usbHid.inputValues).find(([, code]) => code === current)?.[0] as InputSource || this.lastStatus.input
+      return this.profile.usbHid.inputReadValues[String(current)] || this.lastStatus.input
     }
     throw new Error("DDC/CI 承载路径不可用")
   }
@@ -400,7 +405,9 @@ export class MonitorController {
       if (control === "input" && isInput(value) && this.profile.usbHid.inputWriteMode === "vendor-private") {
         await this.sidecar({ operation: "input", transport: "lg-hid-ddc", source: value })
       }
-      else if (control === "input" && isInput(value)) await this.set("lg-hid-ddc", this.profile.usbHid.vcp.input, this.profile.usbHid.inputValues[value])
+      else if (control === "input" && isInput(value) && this.profile.usbHid.inputWriteValues) {
+        await this.set("lg-hid-ddc", this.profile.usbHid.vcp.input, this.profile.usbHid.inputWriteValues[value])
+      }
       else if (control === "mute" && typeof value === "boolean") await this.set("lg-hid-ddc", this.profile.usbHid.vcp.mute, value ? 1 : 2)
       else if ((control === "brightness" || control === "volume") && typeof value === "number") await this.set("lg-hid-ddc", this.profile.usbHid.vcp[control], value)
       else throw new Error("DDC/CI 控制值无效")

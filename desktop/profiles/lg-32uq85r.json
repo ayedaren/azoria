@@ -10,7 +10,7 @@
     "adapter": "lg-monitor-controls-v1",
     "vcp": { "brightness": 16, "volume": 98, "mute": 141, "input": 96 },
     "inputWriteMode": "vendor-private",
-    "inputValues": { "dp1": 15, "hdmi1": 17, "hdmi2": 18, "usbc": 27 }
+    "inputReadValues": { "15": "usbc", "17": "hdmi1", "18": "hdmi2", "27": "usbc", "3840": "usbc" }
   },
   "ddc": {
     "inputReadValues": { "15": "usbc", "17": "hdmi1", "18": "hdmi2", "27": "usbc", "3840": "usbc" },

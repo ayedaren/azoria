@@ -181,8 +181,9 @@ Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `tr
 | --- | --- |
 | `adapter` | USB 报文封装适配器。目前只接受内置的 `lg-monitor-controls-v1`。 |
 | `vcp` | 四项能力对应的 8 位 VCP opcode，JSON 中写十进制 `0–255`。 |
-| `inputWriteMode` | `vcp` 表示用输入源 VCP 及 `inputValues` 写入；`vendor-private` 表示调用该适配器内置的厂商输入切换命令。 |
-| `inputValues` | 该 USB HID 路径返回和写入的输入源编码，键为 `dp1`、`hdmi1`、`hdmi2`、`usbc`，值为整数。`vendor-private` 模式写入时由适配器处理，但读取仍使用此表解码。 |
+| `inputWriteMode` | `vcp` 表示用输入源 VCP 及 `inputWriteValues` 写入；`vendor-private` 表示调用该适配器内置的厂商输入切换命令。 |
+| `inputReadValues` | 将 USB HID 路径读取到的原始输入源值转换成 Desktop 的逻辑输入源。读取编码与写入编码相互独立。 |
+| `inputWriteValues` | `vcp` 写入模式必填，将 `dp1`、`hdmi1`、`hdmi2`、`usbc` 转换成 VCP 写入值；厂商命令模式可以省略。 |
 
 `ddc` 对象字段：
 
@@ -205,7 +206,7 @@ Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `tr
 - `transports` 优先确认 `usb-hid-ddc`，不可用时整台显示器切换到 `video-ddc`；
 - USB HID 路径使用 `lg-monitor-controls-v1` 封装，`16`、`98`、`141`、`96` 分别是
   VCP `0x10`、`0x62`、`0x8D`、`0x60`；
-- 输入切换使用 LG 厂商命令，而 USB 路径的输入源回读值由 `inputValues` 解码；
+- 输入切换使用 LG 厂商命令，而 USB 路径的输入源回读值由独立的 `inputReadValues` 解码；
 - 视频 DDC/CI 路径会把读取到的 `15`、`17`、`18`、`27`、`3840` 转换成界面使用的
   输入源名称；写入则采用 `208`、`144`、`145`、`210` 这组经硬件验证的替代编码；
 - 同一个原始值在通用配置与专用配置中可能有不同含义，专用配置应以对应型号的真实行为为准。

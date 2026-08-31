@@ -57,7 +57,7 @@ constexpr const char *kInputValues[] = {
     "dp1", "hdmi1", "hdmi2", "usbc",
 };
 constexpr const char *kInputLabels[] = {
-    "HDMI1", "HDMI1", "HDMI1", "USB-C",
+    "DP", "HDMI 1", "HDMI 2", "USB-C",
 };
 
 void disableScrolling(lv_obj_t *object) {
@@ -208,9 +208,8 @@ void updateInputButtons(bool pending = false) {
   for (int index = 0; index < kInputCount; ++index) {
     if (!input_buttons[index]) continue;
     bool selected = index == active_input;
-    bool unavailable = index == 0 || index == 2;
     lv_color_t button_color =
-        color(selected ? 0xE1F4FF : unavailable ? 0x131313 : 0x1D1D1D);
+        color(selected ? 0xE1F4FF : 0x1D1D1D);
     lv_obj_set_style_bg_color(input_buttons[index], button_color, 0);
     lv_obj_set_style_bg_color(input_buttons[index], button_color,
                               LV_STATE_DISABLED);
@@ -230,10 +229,7 @@ void updateInputButtons(bool pending = false) {
     if (caption) {
       lv_obj_set_style_text_color(
           caption, color(selected ? 0x000000 : 0xEBF4FF), 0);
-      lv_obj_set_style_text_opa(caption, selected ? LV_OPA_50
-                                                   : unavailable ? LV_OPA_30
-                                                                 : LV_OPA_50,
-                                0);
+      lv_obj_set_style_text_opa(caption, LV_OPA_50, 0);
     }
     lv_obj_t *icon = input_icons[index];
     if (!icon) continue;
@@ -359,9 +355,8 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
   lv_obj_set_pos(button, kInputX[slot], 360);
   lv_obj_set_size(button, 108, 98);
   bool selected = index == active_input;
-  bool unavailable = index == 0 || index == 2;
   lv_obj_set_style_bg_color(
-      button, color(selected ? 0xE1F4FF : unavailable ? 0x131313 : 0x1D1D1D),
+      button, color(selected ? 0xE1F4FF : 0x1D1D1D),
       0);
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_set_style_radius(button, 12, 0);
@@ -393,10 +388,7 @@ lv_obj_t *createInputButton(lv_obj_t *parent, int index, int slot) {
       label(button, kInputLabels[index], 0, 65, &lv_font_montserrat_14);
   lv_obj_set_style_text_color(caption, color(selected ? 0x000000 : 0xEBF4FF),
                               0);
-  lv_obj_set_style_text_opa(caption, selected ? LV_OPA_50
-                                               : unavailable ? LV_OPA_30
-                                                             : LV_OPA_50,
-                            0);
+  lv_obj_set_style_text_opa(caption, LV_OPA_50, 0);
   lv_obj_set_width(caption, 108);
   lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
   return button;
