@@ -11,11 +11,11 @@
 
 ## AZORIA Touch 实机
 
-![桌面控制底座上的 AZORIA Touch](docs/images/azoria-touch-desktop.jpg)
+![桌面控制底座上的 AZORIA Touch](docs/images/azoria-touch-desktop-rec709.jpg)
 
 | 触屏直接调节 | ESP32-S3 原型硬件 |
 | --- | --- |
-| ![通过 AZORIA Touch 调节显示器亮度](docs/images/azoria-touch-interaction.jpg) | ![AZORIA Touch ESP32-S3 控制板](docs/images/azoria-touch-hardware.jpg) |
+| ![通过 AZORIA Touch 调节显示器亮度](docs/images/azoria-touch-interaction-rec709.jpg) | ![AZORIA Touch ESP32-S3 控制板](docs/images/azoria-touch-hardware-rec709.jpg) |
 
 Touch 负责把常用的显示器操作放在手边，Desktop 则在后台完成设备发现、协调、原生
 DDC/CI 访问和固件管理。
