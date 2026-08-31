@@ -6,7 +6,7 @@
 ## 功能
 
 - Electron 桌面控制中心，提供亮度、音量、静音和信号源控制；
-- 自动探测 DDC/CI 的承载路径，并按显示器配置表为每项能力选路和回退；
+- 自动探测并确认整台显示器统一使用的 DDC/CI 承载路径；
 - 在桌面端检测 AZORIA Touch 并完成 Wi‑Fi 配置；
 - 设置中提供默认关闭的开发者模式，用于固件刷写和硬件诊断；
 - Desktop 主动发现、Touch 被动响应的 Wi‑Fi 局域网通信，以及 BLE 备用连接；
@@ -123,7 +123,7 @@ AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名�
 | 输入源 | `0x60` | `96` |
 
 内置配置表位于 `desktop/profiles/`，描述显示器识别条件、VCP opcode、输入源编码和
-每项能力的承载路径优先级。设置页可以加载一份 JSON 配置表；文件经过结构和数值范围
+整台显示器的承载路径优先级。设置页可以加载一份 JSON 配置表；文件经过结构和数值范围
 校验后保存到本机配置目录，不允许指定命令、可执行文件或网络地址。验证成熟的配置表
 可以直接加入 `desktop/profiles/`，随之后的软件版本内置。
 
@@ -137,7 +137,7 @@ DDC 控制工具。
 ### 配置表字段
 
 配置表是 Desktop 与显示器硬件适配层之间的声明式契约，不包含可执行命令。一个完整配置
-由识别条件、能力路由、USB HID 映射和视频链路 DDC/CI 映射组成。
+由识别条件、承载路径优先级、USB HID 映射和视频链路 DDC/CI 映射组成。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -147,13 +147,13 @@ DDC 控制工具。
 | `match.displayNamePattern` | 可选、不区分大小写的正则表达式，用于匹配操作系统报告的显示器名称，最长 120 个字符。 |
 | `match.usbHid.vendorId` | 可选的 USB Vendor ID，使用十进制整数 `0–65535`。 |
 | `match.usbHid.productId` | 可选的 USB Product ID，使用十进制整数 `0–65535`。VID/PID 必须同时匹配。 |
-| `routes` | `brightness`、`volume`、`mute`、`input` 四项能力各自的承载路径优先级。每项都必须至少有一条路径。 |
-| `usbHid` | 当任一路由包含 `usb-hid-ddc` 时必填，描述已内置 USB HID 适配器及其 VCP 映射。 |
-| `ddc` | 当任一路由包含 `video-ddc` 时必填，描述视频链路上的输入源读写编码。 |
+| `transports` | 整台显示器的承载路径优先级，至少包含一项且不能重复。亮度、音量、静音和输入源共用最终确认的同一条路径。 |
+| `usbHid` | 当 `transports` 包含 `usb-hid-ddc` 时必填，描述已内置 USB HID 适配器及其 VCP 映射。 |
+| `ddc` | 当 `transports` 包含 `video-ddc` 时必填，描述视频链路上的输入源读写编码。 |
 
-Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `routes` 从左到右为每项
-能力选择路径。运行中某项能力连续读取失败三次后，只对该能力尝试下一条可用路径；例如亮度
-回退到视频 DDC/CI 时，输入源仍可以继续走 USB HID。可用路径只有：
+Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `transports` 从左到右
+确认一条全局控制路径。亮度、音量、静音、输入源和状态回读全部使用这条路径，不会为不同
+参数分别选路。当前路径失效并确认下一条路径可用后，整台显示器一起切换。可用路径只有：
 
 - `usb-hid-ddc`：通过显示器的 USB HID 控制接口承载 DDC/CI；
 - `video-ddc`：通过 HDMI、DisplayPort 或 USB-C 视频链路承载 DDC/CI。
@@ -185,7 +185,7 @@ Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `ro
 
 - `displayNamePattern` 匹配系统报告的 `LG … 32UQ85…`；USB `1086:39481` 对应十六进制
   VID/PID `043E:9A39`，任一识别条件匹配即可选择这份专用配置；
-- 四项能力都优先使用 `usb-hid-ddc`，探测不可用时回退到 `video-ddc`；
+- `transports` 优先确认 `usb-hid-ddc`，不可用时整台显示器切换到 `video-ddc`；
 - USB HID 路径使用 `lg-monitor-controls-v1` 封装，`16`、`98`、`141`、`96` 分别是
   VCP `0x10`、`0x62`、`0x8D`、`0x60`；
 - 输入切换使用 LG 厂商命令，而 USB 路径的输入源回读值由 `inputValues` 解码；
@@ -198,7 +198,7 @@ Desktop 先探测 USB HID 和视频链路 DDC/CI 是否真正可用，再按 `ro
 1. 复制 `desktop/profiles/generic-ddc.json`，使用新的稳定 `id` 命名文件；
 2. 记录操作系统显示器名称，并通过 USB 枚举确认十六进制 VID/PID，再转换成 JSON 十进制；
 3. 分别测试亮度、音量、静音、输入源在 USB HID 和视频 DDC/CI 上的读写能力；
-4. 为每项能力按可靠性填写 `routes`，不要声明未经测试的路径；
+4. 按整条链路的可靠性填写 `transports`，不要声明未经完整测试的路径；
 5. 对每个输入源分别记录读取原始值与成功写入值，不要假定二者相同；
 6. 在 Desktop 设置中导入配置并查看本地诊断日志，确认写入后的回读值和实际显示器状态一致；
 7. 提交内置配置前，应在断开 USB、切换视频口、睡眠唤醒和重启后重新验证回退行为。

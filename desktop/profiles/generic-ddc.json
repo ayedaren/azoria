@@ -2,12 +2,7 @@
   "id": "generic-ddc",
   "name": "通用 DDC/CI 显示器",
   "fallback": true,
-  "routes": {
-    "brightness": ["video-ddc"],
-    "volume": ["video-ddc"],
-    "mute": ["video-ddc"],
-    "input": ["video-ddc"]
-  },
+  "transports": ["video-ddc"],
   "ddc": {
     "inputReadValues": { "15": "dp1", "16": "dp1", "17": "hdmi1", "18": "hdmi2", "27": "usbc" },
     "inputWriteValues": { "dp1": "15", "hdmi1": "17", "hdmi2": "18", "usbc": "27" },

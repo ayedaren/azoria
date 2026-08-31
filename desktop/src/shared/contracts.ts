@@ -22,7 +22,7 @@ export interface MonitorConnectionInfo {
   profileName: string
   summary: string
   availableTransports: MonitorTransport[]
-  routes: Record<ControlName, MonitorTransport>
+  transport: MonitorTransport
 }
 
 export interface UsbDevice {

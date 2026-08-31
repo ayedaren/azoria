@@ -5,12 +5,7 @@
     "displayNamePattern": "LG.*32UQ85",
     "usbHid": { "vendorId": 1086, "productId": 39481 }
   },
-  "routes": {
-    "brightness": ["usb-hid-ddc", "video-ddc"],
-    "volume": ["usb-hid-ddc", "video-ddc"],
-    "mute": ["usb-hid-ddc", "video-ddc"],
-    "input": ["usb-hid-ddc", "video-ddc"]
-  },
+  "transports": ["usb-hid-ddc", "video-ddc"],
   "usbHid": {
     "adapter": "lg-monitor-controls-v1",
     "vcp": { "brightness": 16, "volume": 98, "mute": 141, "input": 96 },

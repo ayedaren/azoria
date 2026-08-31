@@ -17,7 +17,7 @@ interface MonitorProfile {
   name: string
   fallback?: boolean
   match?: { displayNamePattern?: string; usbHid?: { vendorId: number; productId: number } }
-  routes: Record<ControlName, MonitorTransport[]>
+  transports: MonitorTransport[]
   usbHid?: {
     adapter: "lg-monitor-controls-v1"
     vcp: Record<ControlName, number>
@@ -62,11 +62,12 @@ function validateProfile(value: unknown): MonitorProfile {
   if (!profile.id || !/^[a-z0-9][a-z0-9-]{1,63}$/.test(profile.id) || !profile.name || profile.name.length > 80) {
     throw new Error("配置档名称或 ID 无效")
   }
-  if (!profile.routes || controls.some((control) => {
-    const route = profile.routes?.[control]
-    return !Array.isArray(route) || !route.length || route.some((item) => !transportIds.includes(item))
-  })) throw new Error("配置档 DDC/CI 承载路径无效")
-  const requested = controls.flatMap((control) => profile.routes![control])
+  if (!Array.isArray(profile.transports) || !profile.transports.length ||
+      profile.transports.some((item) => !transportIds.includes(item)) ||
+      new Set(profile.transports).size !== profile.transports.length) {
+    throw new Error("配置档 DDC/CI 承载路径无效")
+  }
+  const requested = profile.transports
   if (requested.includes("usb-hid-ddc") && !profile.usbHid) throw new Error("配置档缺少 USB HID DDC/CI 映射")
   if (requested.includes("video-ddc") && !profile.ddc) throw new Error("配置档缺少视频链路 DDC/CI 映射")
   if (profile.match?.displayNamePattern) {
@@ -109,13 +110,11 @@ export class MonitorController {
   private profile?: MonitorProfile
   private displayName = "未检测到显示器"
   private available = new Set<MonitorTransport>()
-  private routes: Record<ControlName, MonitorTransport> = {
-    brightness: "unavailable", volume: "unavailable", mute: "unavailable", input: "unavailable",
-  }
+  private transport: MonitorTransport = "unavailable"
   private detectedAt = 0
   private lastStatus: MonitorStatus = { ...initialStatus }
   private readonly trustedControls = new Set<ControlName>()
-  private readonly routeFailures: Record<ControlName, number> = { brightness: 0, volume: 0, mute: 0, input: 0 }
+  private transportFailures = 0
   private operationQueue: Promise<void> = Promise.resolve()
   private controlSequence = 0
 
@@ -242,8 +241,8 @@ export class MonitorController {
       ...(profileAcceptsHid ? ["usb-hid-ddc" as const] : []),
       ...(videoDdc ? ["video-ddc" as const] : []),
     ])
-    for (const control of controls) {
-      this.routes[control] = this.profile.routes[control].find((item) => this.available.has(item)) || "unavailable"
+    if (this.transport === "unavailable" || !this.available.has(this.transport) || !this.profile.transports.includes(this.transport)) {
+      this.selectTransport(this.profile.transports.find((item) => this.available.has(item)) || "unavailable")
     }
     if (!this.available.size) this.displayName = "未检测到显示器"
   }
@@ -256,21 +255,25 @@ export class MonitorController {
 
   async connection(force = false): Promise<MonitorConnectionInfo> {
     await this.detect(force)
-    const active = [...new Set(controls.map((control) => this.routes[control]).filter((item) => item !== "unavailable"))]
     return {
       displayName: this.displayName,
       profileId: this.profile!.id,
       profileName: this.profile!.name,
-      summary: active.length ? active.map((item) => this.label(item)).join(" + ") : "未连接",
+      summary: this.transport !== "unavailable" ? this.label(this.transport) : "未连接",
       availableTransports: [...this.available],
-      routes: { ...this.routes },
+      transport: this.transport,
     }
   }
 
-  private candidates(control: ControlName): MonitorTransport[] {
-    const route = this.profile?.routes[control] || []
-    const ordered = [this.routes[control], ...route]
+  private candidates(): MonitorTransport[] {
+    const ordered = [this.transport, ...(this.profile?.transports || [])]
     return ordered.filter((item, index) => item !== "unavailable" && this.available.has(item) && ordered.indexOf(item) === index)
+  }
+
+  private selectTransport(transport: MonitorTransport): void {
+    if (transport !== this.transport) this.trustedControls.clear()
+    this.transport = transport
+    this.transportFailures = 0
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -305,23 +308,22 @@ export class MonitorController {
 
   private async readWithFallback(control: ControlName): Promise<number | boolean | InputSource> {
     let lastError: unknown
-    const current = this.routes[control]
+    const current = this.transport
     if (current !== "unavailable" && this.available.has(current)) {
       try {
         const value = await this.read(control, current)
-        this.routeFailures[control] = 0
+        this.transportFailures = 0
         return value
       } catch (error) {
         lastError = error
-        this.routeFailures[control]++
-        if (this.routeFailures[control] < 3) throw error
+        this.transportFailures++
+        if (this.transportFailures < 3) throw error
       }
     }
-    for (const transport of this.candidates(control).filter((item) => item !== current)) {
+    for (const transport of this.candidates().filter((item) => item !== current)) {
       try {
         const value = await this.read(control, transport)
-        this.routes[control] = transport
-        this.routeFailures[control] = 0
+        this.selectTransport(transport)
         return value
       } catch (error) { lastError = error }
     }
@@ -369,13 +371,13 @@ export class MonitorController {
 
   private async checkReachable(): Promise<boolean> {
     await this.detect(true)
-    for (const transport of this.candidates("brightness")) {
+    for (const transport of this.candidates()) {
       try {
         const first = await this.read("brightness", transport)
         await new Promise((resolve) => setTimeout(resolve, 80))
         const second = await this.read("brightness", transport)
         if (!this.valuesMatch("brightness", first, second)) continue
-        this.routes.brightness = transport
+        this.selectTransport(transport)
         return true
       } catch { /* Only the Desktop on the active display input is eligible. */ }
     }
@@ -429,14 +431,14 @@ export class MonitorController {
       throw failure
     }
     let lastError: unknown
-    for (const transport of this.candidates(control)) {
+    for (const transport of this.candidates()) {
       const routeStartedAt = Date.now()
       this.logger?.info("control.route_attempt", {
         operation, control, transport, display: this.display, profile: this.profile?.id,
       })
       try {
         await this.write(control, value, transport)
-        this.routes[control] = transport
+        this.selectTransport(transport)
         let confirmed = value
         let verification: "skipped" | "matched" | "unavailable" | "mismatch" = request.final === false ? "skipped" : "unavailable"
         if (request.final !== false) {
@@ -473,7 +475,7 @@ export class MonitorController {
         else if (control === "mute" && typeof confirmed === "boolean") this.lastStatus.mute = confirmed
         else if (control === "input" && isInput(confirmed)) this.lastStatus.input = confirmed
         this.trustedControls.add(control)
-        this.routeFailures[control] = 0
+        this.transportFailures = 0
         this.logger?.info("control.success", {
           operation, source, control, requested: String(value), confirmed: String(confirmed), transport,
           display: this.display, profile: this.profile?.id, verification,
