@@ -160,7 +160,14 @@ export class LanController {
     const candidates = [...this.peers.values()]
       .filter((peer) => peer.reachable && now - peer.seenAt <= peerMaxAgeMs)
       .sort((left, right) => left.id.localeCompare(right.id))
-    this.masterId = candidates[0]?.id || ""
+    const current = candidates.find((peer) => peer.id === this.masterId)
+    const claimed = candidates.filter((peer) => peer.master)
+    // Keep the established DDC/CI owner while its heartbeat and control path
+    // remain healthy. Election is needed only on first contact, disconnect or
+    // a split-brain recovery after two previously separated peers reconnect.
+    if (!current || claimed.length > 1) {
+      this.masterId = claimed[0]?.id || candidates[0]?.id || ""
+    }
     this.isMaster = this.masterId === this.desktopId
     return this.masterId
   }
@@ -359,10 +366,13 @@ export class LanController {
         this.releaseMaster(socket, network)
         return
       }
-      this.claims.set(command.key, this.desktopId)
-      this.broadcast(socket, network, `AZORIA_DESKTOP_CLAIM_V1|${command.touchId}|${command.bootNonce}|${command.commandId}|${this.desktopId}|${this.heartbeatSequence}`)
-      await new Promise((resolve) => setTimeout(resolve, 120))
-      if (this.commandResults.has(command.key) || this.claims.get(command.key) !== this.desktopId) return
+      const establishingMaster = currentMaster !== this.desktopId
+      if (establishingMaster) {
+        this.claims.set(command.key, this.desktopId)
+        this.broadcast(socket, network, `AZORIA_DESKTOP_CLAIM_V1|${command.touchId}|${command.bootNonce}|${command.commandId}|${this.desktopId}|${this.heartbeatSequence}`)
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        if (this.commandResults.has(command.key) || this.claims.get(command.key) !== this.desktopId) return
+      }
       const status = await this.monitor.control({ control: command.control, value: command.value, final: command.final }, "touch")
       const returned = status[command.control as keyof typeof status]
       const encoded = typeof returned === "boolean" ? (returned ? "1" : "0") : String(returned)
