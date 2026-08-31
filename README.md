@@ -10,7 +10,7 @@
 - 在桌面端检测 AZORIA Touch 并完成 Wi‑Fi 配置；
 - 设置中提供默认关闭的开发者模式，用于固件刷写和硬件诊断；
 - Desktop 主动发现、Touch 被动响应的 Wi‑Fi 局域网通信，以及 BLE 备用连接；
-- BLE OTA；
+- 固件内置带大小与 SHA-256 校验的 BLE OTA 服务；
 - Rust Sidecar 提供跨平台原生 DDC/CI 与 LG USB HID/DDC 控制。
 
 ## 目录
@@ -61,6 +61,14 @@ AZORIA Touch 是可选的实体输入终端。首次使用时通过 USB 点击�
 Touch 通过 Wi‑Fi 或 BLE 建立连接后，由 Desktop 状态响应同步当前 Unix 时间和主机时区
 偏移，因此屏幕时间跟随当前 Desktop，不依赖固定时区或单独的公网 NTP 服务。
 
+局域网通信使用三个固定端口：TCP `8732` 提供状态和设备登记，UDP `8733` 用于 Desktop
+发现 Touch 及返回命令结果，UDP `8734` 用于 Desktop 心跳、协调和 Touch 控制命令广播。
+多个 Desktop 同时在线时，只有实际具备可用 DDC/CI 路径的主机可以执行命令。首次建立
+控制关系后，该主机成为粘性 Master；只要心跳和 DDC/CI 路径保持正常，后续命令不会重复
+选举。Master 断线、路径失效或执行失败时，其他有能力的 Desktop 才重新竞争执行权；网络
+分区恢复后若出现多个 Master，则按稳定的 Desktop ID 消除冲突。同一命令 ID 的重发使用
+缓存结果，不会重复写入显示器。
+
 固件开发、恢复或测试时，在 AZORIA Desktop 设置中开启“开发者模式”，再进入
 出现的“开发者”页。选择本地 AZORIA Touch `.bin` 固件后，程序会校验镜像类型、
 版本、校验和与设备身份，并在实际写入前再次核验文件哈希。
@@ -94,7 +102,8 @@ pio run -e viewe_uedx48480040e_wb_a -t upload --upload-port /dev/cu.usbmodemXXXX
 
 AZORIA Desktop 的渲染进程没有 Node.js 权限，硬件操作通过白名单 IPC 完成。Desktop
 可以主动发起公网 HTTP/HTTPS 请求，但显示器控制、Touch 发现和协调服务只监听私有 IPv4
-地址，并拒绝公网来源的入站请求。局域网协议不做身份认证，应仅在可信局域网中使用。
+地址或 UDP 通配接收地址，并按来源所属的私有子网过滤数据包；公网来源的入站请求会被
+拒绝。局域网协议不做身份认证，应仅在可信局域网中使用。
 
 ## 显示器配置表
 
